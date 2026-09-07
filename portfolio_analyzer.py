@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import engine
 
-st.set_page_config(page_title="Portfolio Analyzer", layout="wide")
+st.set_page_config(page_title="Portfolio Analyzer", page_icon="📊", layout="wide")
 cached_download = st.cache_data(show_spinner="Downloading price history...")(engine.download_prices)
 
 def holdings_df_to_dict(df):
@@ -169,11 +169,13 @@ else:
         if sec["sectors"]:
             for row in sec["sectors"]:
                 pct_of_total = row["pct"] * (1 - sec["non_eq"])
-                st.write(f"**{row['sector']}**: {pct_of_total:.1f}% of total portfolio ({row['pct']:.1f}% of equity — S&P 500: {row['sp']:.1f}%)")
+                st.write(f"**{row['sector']}** — {pct_of_total:.1f}% of total portfolio (S&P 500: {row['sp']:.1f}%)")
+                st.progress(min(1.0, pct_of_total / 100))
         else:
             st.info("No equity sector data for this portfolio.")
 
         st.caption(f"Non-equity (bonds/gold/cash): {sec['non_eq']*100:.1f}%")
+        st.progress(sec["non_eq"])
 
     elif active_tab == "Correlation":
         st.subheader("Correlation")
@@ -186,17 +188,27 @@ else:
         rp = engine.redundant_pairs(weights, returns, redundant_cutoff)
         if rp:
             for a, b, c, w in rp:
-                st.write(f"**{a}** & **{b}**: correlated {c:.2f}, {w*100:.1f}% of your portfolio overlapping")
+                with st.container(border=True):
+                    st.write(f"**{a}** & **{b}**")
+                    st.caption(f"Correlated {c:.2f} — {w*100:.1f}% of your portfolio overlapping")
         else:
             st.info("No redundant pairs at this cutoff.")
 
         lt = engine.look_through_overlap_pairs(weights)
-        for stock, fund, implied, overlap in lt:
-            st.write(f"**{stock}** — you hold it directly, but also get {implied*100:.1f}% of it through **{fund}** ({overlap*100:.1f}% of portfolio overlapping)")
+        if lt:
+            st.write("**Fund look-through overlap**")
+            for stock, fund, implied, overlap in lt:
+                with st.container(border=True):
+                    st.write(f"**{stock}** — held directly, and {implied*100:.1f}% of it through **{fund}**")
+                    st.caption(f"{overlap*100:.1f}% of portfolio overlapping")
 
         fo = engine.fund_overlap_pairs(weights)
-        for stock, f1, f2, overlap in fo:
-            st.write(f"**{stock}** shows up in both **{f1}** and **{f2}** ({overlap*100:.1f}% overlapping)")
+        if fo:
+            st.write("**Fund vs. fund overlap**")
+            for stock, f1, f2, overlap in fo:
+                with st.container(border=True):
+                    st.write(f"**{stock}** shows up in both **{f1}** and **{f2}**")
+                    st.caption(f"{overlap*100:.1f}% overlapping")
 
     elif active_tab == "Safety nets":
         st.subheader("Safety nets")
@@ -204,7 +216,8 @@ else:
         hedges = [t for t in is_hedge if is_hedge[t]]
         if hedges:
             for t in hedges:
-                st.write(f"**{t}**: correlation to the rest of your portfolio is {hedge_corr[t]:.2f}")
+                with st.container(border=True):
+                    st.success(f"**{t}** — correlation to the rest of your portfolio: {hedge_corr[t]:.2f}")
         else:
             st.warning("Nothing currently qualifies as a safety net. Bonds, gold, or cash tend to fill this role.")
 
