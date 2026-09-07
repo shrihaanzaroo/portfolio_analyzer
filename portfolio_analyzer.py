@@ -322,7 +322,19 @@ else:
             compare_df = result["path"].rename("Portfolio").to_frame()
             if spy_result:
                 compare_df["S&P 500"] = spy_result["path"]
-            st.line_chart(compare_df)
+
+            compare_df.index.name = "Date"
+            chart_df = compare_df.reset_index().melt(id_vars="Date", var_name="Series", value_name="Return")
+            chart = alt.Chart(chart_df).mark_line().encode(
+                x=alt.X("Date:T", title="Date"),
+                y=alt.Y("Return:Q", title="Cumulative return", axis=alt.Axis(format="%")),
+                color=alt.Color("Series:N", title=None),
+                tooltip=[alt.Tooltip("Date:T", title="Date", format="%b %d, %Y"),
+                         alt.Tooltip("Series:N", title="Series"),
+                         alt.Tooltip("Return:Q", title="Return", format=".1%")]
+            ).properties(height=350)
+            st.altair_chart(chart, use_container_width=True)
+
     elif active_tab == "What if":
         st.subheader("What if")
         st.write("Swap one holding for another and see how your metrics would change before you actually trade.")
