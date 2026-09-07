@@ -50,6 +50,8 @@ holdings_df = st.sidebar.data_editor(
     },
     hide_index=True,
 )
+st.sidebar.caption("Shares = how many units of that stock/fund you own. Not sure of your exact count? An estimate is fine — this tool is for understanding patterns, not exact accounting.")
+
 
 if not holdings_df.empty:
     ticker_to_delete = st.sidebar.selectbox("Remove a holding", holdings_df["Ticker"].tolist())
@@ -109,7 +111,13 @@ if st.sidebar.button("Analyze", type="primary"):
 st.title("Portfolio Analyzer")
 
 if st.session_state.weights is None:
-    st.info("Enter holdings in the sidebar and click **Analyze**.")
+    st.info(
+        "**What this does:** enter the stocks you own (or want to check) and this tool tells you "
+        "how diversified you *really* are — not just how many tickers you have, but whether they're "
+        "secretly all making the same bet (e.g. six different tech stocks that all rise and fall together). "
+        "The default holdings on the left are just an example — edit them, then click **Analyze**."
+    )
+
 else:
     weights = st.session_state.weights
     returns = st.session_state.returns
@@ -137,10 +145,10 @@ else:
     if active_tab == "Overview":
         st.subheader("Overview")
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Holdings", len(tickers))
-        c2.metric("Effective bets", f"{eb:.2f}")
-        c3.metric("True bets", f"{tb['true_bets']:.2f}")
-        c4.metric("Avg correlation", f"{tb['avg_corr']:.2f}" if tb["avg_corr"] is not None else "—")
+        c1.metric("Holdings", len(tickers), help="How many different tickers you own.")
+        c2.metric("Effective bets", f"{eb:.2f}", help="Roughly: how many genuinely different positions your portfolio adds up to, once you account for how unevenly sized they are. If this number is much lower than your holdings count, a few positions are dominating.")
+        c3.metric("True bets", f"{tb['true_bets']:.2f}", help="Like Effective bets, but also accounts for correlation — holdings that move together in the market count as less diversifying than holdings that move independently. This is usually the more honest number.")
+        c4.metric("Avg correlation", f"{tb['avg_corr']:.2f}" if tb["avg_corr"] is not None else "—", help="On average, how much your holdings move together (1.0 = always in the same direction, 0 = unrelated, negative = tend to move opposite each other). Lower is generally better for diversification.")
 
         total_value = st.session_state.stock_value + st.session_state.cash
         cash_pct = st.session_state.cash / total_value if total_value > 0 else 0
@@ -151,9 +159,10 @@ else:
     elif active_tab == "Position sizes":
         st.subheader("Position sizes")
         c1, c2, c3 = st.columns(3)
-        c1.metric("Holdings", len(tickers))
-        c2.metric("HHI", f"{1/eb:.3f}")
-        c3.metric("Effective bets", f"{eb:.2f}")
+        c1.metric("Holdings", len(tickers), help="How many different tickers you own.")
+        c2.metric("HHI", f"{1/eb:.3f}", help="Herfindahl-Hirschman Index — a standard way to measure concentration. Ranges 0 to 1; closer to 0 means your money is spread evenly, closer to 1 means it's concentrated in a few positions.")
+        c3.metric("Effective bets", f"{eb:.2f}", help="Roughly: how many genuinely different positions your portfolio adds up to, once you account for how unevenly sized they are.")
+
 
     elif active_tab == "Sector mix":
         st.subheader("Sector mix")
