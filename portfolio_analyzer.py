@@ -37,8 +37,6 @@ if "weights" not in st.session_state:
     st.session_state.weights = None
 if "cash" not in st.session_state:
     st.session_state.cash = 0.0
-cash_input = st.sidebar.number_input("Cash ($)", min_value=0.0, value=st.session_state.cash, step=100.0)
-
 
 st.sidebar.header("Portfolio Holdings")
 holdings_df = st.sidebar.data_editor(
@@ -52,10 +50,9 @@ holdings_df = st.sidebar.data_editor(
 )
 st.sidebar.caption("Shares = how many units of that stock/fund you own. Not sure of your exact count? An estimate is fine — this tool is for understanding patterns, not exact accounting.")
 
-
 if not holdings_df.empty:
     ticker_to_delete = st.sidebar.selectbox("Remove a holding", holdings_df["Ticker"].tolist())
-    if st.sidebar.button("Delete holding"):
+    if st.sidebar.button("Delete holding", use_container_width=True):
         st.session_state.holdings_df = holdings_df[holdings_df["Ticker"] != ticker_to_delete].reset_index(drop=True)
         st.rerun()
 
@@ -63,6 +60,11 @@ tickers_typed = [str(t).strip().upper() for t in holdings_df["Ticker"] if str(t)
 duplicates = {t for t in tickers_typed if tickers_typed.count(t) > 1}
 if duplicates:
     st.sidebar.warning(f"Duplicate ticker(s): {', '.join(duplicates)} — shares will be combined.")
+
+cash_input = st.sidebar.number_input("Cash ($)", min_value=0.0, value=st.session_state.cash, step=100.0, help="Money sitting uninvested. Counts toward your total but isn't a bet on anything.")
+
+st.sidebar.divider()
+st.sidebar.subheader("Settings")
 
 
 years = st.sidebar.slider("Years of history", min_value=1, max_value=25, value=1)
@@ -83,7 +85,7 @@ redundant_cutoff = st.session_state.redundant_cutoff
 
 
 period = f"{years}y"
-if st.sidebar.button("Analyze", type="primary"):
+if st.sidebar.button("Analyze", type="primary", use_container_width=True):
     st.session_state.holdings_df = holdings_df
     st.session_state.cash = cash_input
     holdings = holdings_df_to_dict(holdings_df)
@@ -115,8 +117,10 @@ if st.session_state.weights is None:
         "**What this does:** enter the stocks you own (or want to check) and this tool tells you "
         "how diversified you *really* are — not just how many tickers you have, but whether they're "
         "secretly all making the same bet (e.g. six different tech stocks that all rise and fall together). "
-        "The default holdings on the left are just an example — edit them, then click **Analyze**."
+        "Your holdings live in the **sidebar** — on a phone, tap the **›** arrow at the top-left to open it. "
+        "The defaults there are just an example — edit them, then tap **Analyze**."
     )
+
 
 else:
     weights = st.session_state.weights
@@ -138,9 +142,24 @@ else:
         "Duplicate bets", "Safety nets", "Swings", "Consistency",
         "Crash test", "What if", "Report card", "Learn",
     ]
+    tab_descriptions = {
+        "Overview": "The headline numbers — how many real bets your portfolio is making.",
+        "Position sizes": "How evenly your money is spread across holdings.",
+        "Sector mix": "Which industries your money is in, compared to the S&P 500.",
+        "Correlation": "How much each pair of holdings moves together.",
+        "Duplicate bets": "Holdings that are secretly the same bet twice.",
+        "Safety nets": "Holdings that tend to hold up when the rest of your portfolio falls.",
+        "Swings": "How bumpy the ride is — your volatility vs. the market.",
+        "Consistency": "How often your months have been positive.",
+        "Crash test": "How this portfolio would have done in past market crashes.",
+        "What if": "Try a swap and see how the numbers change before you trade.",
+        "Report card": "A letter grade for each part of your diversification.",
+        "Learn": "The ideas behind the numbers, in plain language.",
+    }
     if "active_tab" not in st.session_state:
         st.session_state.active_tab = tab_names[0]
-    active_tab = st.radio("Section", tab_names, horizontal=True, key="active_tab", label_visibility="collapsed")
+    active_tab = st.selectbox("Section", tab_names, key="active_tab")
+    st.caption(tab_descriptions[active_tab])
 
     if active_tab == "Overview":
         st.subheader("Overview")
@@ -226,13 +245,21 @@ else:
         port_vol = engine.portfolio_vol(weights, returns[tickers])
         spy_vol = engine.ann_vol(returns["SPY"])
         c1, c2 = st.columns(2)
-        c1.metric("Your portfolio (annualized)", f"{port_vol*100:.1f}%")
-        c2.metric("S&P 500 / SPY (annualized)", f"{spy_vol*100:.1f}%")
+        c1.metric("Your portfolio (annualized)", f"{port_vol*100:.1f}%", help="How much your whole portfolio's value swings in a typical year. Lower = smoother ride.")
+        c2.metric("S&P 500 / SPY (annualized)", f"{spy_vol*100:.1f}%", help="The same number for the overall US stock market, as a benchmark.")
 
         st.write("**Per-holding volatility**")
         vols = {t: engine.ann_vol(returns[t]) for t in tickers}
-        for t, v in sorted(vols.items(), key=lambda x: -x[1]):
-            st.write(f"**{t}**: {v*100:.1f}%")
+        vol_df = pd.DataFrame({"Ticker": list(vols.keys()), "Volatility": list(vols.values())})
+        bars = alt.Chart(vol_df).mark_bar().encode(
+            x=alt.X("Volatility:Q", title="Annualized volatility", axis=alt.Axis(format="%")),
+            y=alt.Y("Ticker:N", sort="-x", title=None),
+            tooltip=[alt.Tooltip("Ticker:N"), alt.Tooltip("Volatility:Q", title="Volatility", format=".1%")]
+        ).properties(height=max(150, 30 * len(vol_df)))
+        spy_line = alt.Chart(pd.DataFrame({"Volatility": [spy_vol]})).mark_rule(color="gray", strokeDash=[4, 4]).encode(x="Volatility:Q")
+        st.altair_chart(bars + spy_line, use_container_width=True)
+        st.caption("Dashed line = S&P 500 volatility. Bars to the right of it are more volatile than the market.")
+
     elif active_tab == "Consistency":
         st.subheader("Consistency")
         result = engine.rolling_win_rate(weights, returns[tickers])
