@@ -1,8 +1,6 @@
 import pandas as pd
 import altair as alt
 import streamlit as st
-import matplotlib.pyplot as plt
-import seaborn as sns
 import engine
 import tips
 
@@ -64,9 +62,7 @@ if duplicates:
 
 cash_input = st.sidebar.number_input("Cash ($)", min_value=0.0, value=st.session_state.cash, step=100.0, help="Money you've set aside but not invested.")
 
-st.sidebar.divider()
-years = st.sidebar.slider("Years of history to look at", min_value=1, max_value=25, value=3, help="More years give steadier numbers, but newer companies won't have that much history.")
-period = f"{years}y"
+period = "3y"
 
 if st.sidebar.button("Analyze", type="primary", use_container_width=True):
     st.session_state.holdings_df = holdings_df
@@ -127,6 +123,60 @@ else:
             st.write(f"**Why it matters:** {tip['why']}")
             st.write(f"**Try this:** {tip['action']}")
 
+    st.subheader("How it would have held up in past crashes")
+    st.caption("What this exact mix would have done, compared with the S&P 500.")
+    crash_prices = cached_download(list(dict.fromkeys(tickers + ["SPY"])), "max")
+    crash_returns = engine.compute_returns(crash_prices)
+    crashes = [
+        ("2022 bear market", "2022-01-03", "2022-10-13"),
+        ("COVID crash, 2020", "2020-02-19", "2020-03-23"),
+        ("Late-2018 selloff", "2018-10-01", "2018-12-24"),
+    ]
+    worse_count = 0
+    compared = 0
+    cols = st.columns(3)
+    for col, (name, start, end) in zip(cols, crashes):
+        yours = engine.crash_test(weights, crash_returns[tickers], start, end)
+        spy = engine.crash_test({"SPY": 1.0}, crash_returns[["SPY"]], start, end)
+        with col:
+            with st.container(border=True):
+                st.write(f"**{name}**")
+                if yours is None:
+                    st.caption("Not enough history — one of your holdings didn't exist yet.")
+                else:
+                    st.metric("You", f"{yours['total_return']*100:.0f}%")
+                    if spy is not None:
+                        st.metric("S&P 500", f"{spy['total_return']*100:.0f}%")
+                        compared += 1
+                        if yours["total_return"] < spy["total_return"]:
+                            worse_count += 1
+    if compared:
+        if worse_count == 0:
+            st.success(f"This mix would have dropped **less** than the market in every crash we could check ({compared} of {compared}).")
+        elif worse_count == compared:
+            st.warning(f"This mix would have dropped **more** than the market in every crash we could check ({compared} of {compared}). The tips above are how you soften that.")
+        else:
+            st.info(f"This mix would have dropped more than the market in {worse_count} of the {compared} crashes we could check.")
+
+    st.subheader("How steady it has been")
+    steady = engine.rolling_win_rate(weights, returns[tickers])
+    monthly = steady["monthly"]
+    ups = int((monthly > 0).sum())
+    total_months = len(monthly)
+    s1, s2 = st.columns([1, 3])
+    s1.metric("Months that ended up", f"{ups} of {total_months}", help="Over the last 3 years, how many calendar months this mix gained value. Around 60% is typical for the overall market.")
+    with s2:
+        monthly_df = monthly.reset_index()
+        monthly_df.columns = ["Month", "Return"]
+        monthly_df["Direction"] = monthly_df["Return"].apply(lambda r: "Up" if r >= 0 else "Down")
+        chart = alt.Chart(monthly_df).mark_bar().encode(
+            x=alt.X("Month:T", title=None),
+            y=alt.Y("Return:Q", title="Monthly change", axis=alt.Axis(format="%")),
+            color=alt.Color("Direction:N", scale=alt.Scale(domain=["Up", "Down"], range=["#2ecc71", "#e74c3c"]), legend=None),
+            tooltip=[alt.Tooltip("Month:T", title="Month", format="%b %Y"), alt.Tooltip("Return:Q", title="Change", format=".1%")]
+        ).properties(height=220)
+        st.altair_chart(chart, use_container_width=True)
+
     st.subheader("Where your money really is")
     left, right = st.columns(2)
     with left:
@@ -147,30 +197,6 @@ else:
             st.info("None of your holdings are individual stocks or stock funds, so there's no industry split to show.")
         if facts["non_eq"] > 0.005:
             st.caption(f"Bonds, gold, or other non-stock funds: {facts['non_eq']*100:.0f}% of your invested money.")
-
-    with st.expander("Under the hood — the numbers behind the tips"):
-        n1, n2, n3, n4 = st.columns(4)
-        n1.metric("Effective bets", f"{facts['effective_bets']:.2f}", help="How many separate positions your portfolio adds up to based on size alone (a fund counts as many). Ignores whether they move together.")
-        n2.metric("True bets", f"{facts['true_bets']:.2f}", help="Effective bets, discounted for holdings that move together. The more honest number.")
-        n3.metric("Avg correlation", f"{facts['avg_corr']:.2f}" if facts["avg_corr"] is not None else "—", help="On average, how much your holdings move together. 1 = always together, 0 = unrelated, negative = opposite.")
-        n4.metric("Swings: you vs. S&P 500", f"{facts['port_vol']*100:.0f}% vs {facts['spy_vol']*100:.0f}%", help="How much each moves in a typical year. Higher = bumpier ride.")
-
-        st.write("**How much each pair of holdings moves together** — 1 = always together, 0 = unrelated")
-        corr = engine.correlation_matrix(returns[tickers])
-        fig, ax = plt.subplots(figsize=(7, 5))
-        sns.heatmap(corr, annot=True, cmap="coolwarm", vmin=-1, vmax=1, fmt=".2f", ax=ax)
-        st.pyplot(fig)
-
-        st.write("**How bumpy each holding is** — dashed line is the S&P 500")
-        vols = {t: engine.ann_vol(returns[t]) for t in tickers}
-        vol_df = pd.DataFrame({"Ticker": list(vols.keys()), "Volatility": list(vols.values())})
-        bars = alt.Chart(vol_df).mark_bar().encode(
-            x=alt.X("Volatility:Q", title="Typical yearly swing", axis=alt.Axis(format="%")),
-            y=alt.Y("Ticker:N", sort="-x", title=None),
-            tooltip=[alt.Tooltip("Ticker:N"), alt.Tooltip("Volatility:Q", title="Swing", format=".1%")]
-        ).properties(height=max(150, 30 * len(vol_df)))
-        spy_line = alt.Chart(pd.DataFrame({"Volatility": [facts["spy_vol"]]})).mark_rule(color="gray", strokeDash=[4, 4]).encode(x="Volatility:Q")
-        st.altair_chart(bars + spy_line, use_container_width=True)
 
     with st.expander("Learn the ideas — a 5-minute read"):
         st.write("#### Owning more stocks isn't the same as being spread out")
