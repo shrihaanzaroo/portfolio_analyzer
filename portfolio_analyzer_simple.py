@@ -107,14 +107,17 @@ else:
     facts = advice["facts"]
 
     with st.container(border=True):
-        g, v = st.columns([1, 4])
-        g.metric("Grade", advice["grade"], help="A to F, based on how spread out your money is, how much your holdings move together, and how bumpy the ride is. Discounted if most of your money is sitting in cash.")
+        g, v = st.columns([1, 5])
+        g.markdown(f"# {advice['grade']}")
+        g.caption("Grade")
         v.markdown(f"#### {advice['verdict']}")
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Holdings", facts["holdings"], help="How many different tickers you own.")
-        m2.metric("Real bets", f"{facts['true_bets']:.1f}", help="How many genuinely separate bets your holdings add up to, once you account for the ones that move together. If this is much lower than your holdings count, they're mostly the same bet.")
-        m3.metric("Biggest holding", f"{facts['biggest']} · {facts['biggest_pct']:.0f}%", help="Your largest single position, as a share of everything you own including cash.")
+        v.markdown(
+            f"**{facts['holdings']} holdings** · acting like **{facts['true_bets']:.1f} real bets** · "
+            f"biggest: **{facts['biggest']} ({facts['biggest_pct']:.0f}% of your money)**"
+        )
+        v.caption("Real bets = how many genuinely separate bets your holdings add up to, once the ones that move together are counted as one. Grades run A to F, and are discounted if most of your money is sitting in cash.")
 
+    st.divider()
     st.subheader("What to do first")
     st.caption("Ordered by how much they matter. Red = worth fixing, yellow = worth knowing, green = already working.")
     for tip in advice["tips"]:
@@ -123,6 +126,7 @@ else:
             st.write(f"**Why it matters:** {tip['why']}")
             st.write(f"**Try this:** {tip['action']}")
 
+    st.divider()
     st.subheader("How it would have held up in past crashes")
     st.caption("What this exact mix would have done, compared with the S&P 500.")
     crash_prices = cached_download(list(dict.fromkeys(tickers + ["SPY"])), "max")
@@ -134,22 +138,25 @@ else:
     ]
     worse_count = 0
     compared = 0
-    cols = st.columns(3)
+    cols = st.columns(3, gap="medium")
     for col, (name, start, end) in zip(cols, crashes):
         yours = engine.crash_test(weights, crash_returns[tickers], start, end)
         spy = engine.crash_test({"SPY": 1.0}, crash_returns[["SPY"]], start, end)
         with col:
             with st.container(border=True):
-                st.write(f"**{name}**")
+                st.markdown(f"**{name}**")
                 if yours is None:
                     st.caption("Not enough history — one of your holdings didn't exist yet.")
                 else:
-                    st.metric("You", f"{yours['total_return']*100:.0f}%")
+                    st.markdown(f"You: **{yours['total_return']*100:.0f}%**")
                     if spy is not None:
-                        st.metric("S&P 500", f"{spy['total_return']*100:.0f}%")
+                        st.markdown(f"S&P 500: **{spy['total_return']*100:.0f}%**")
                         compared += 1
                         if yours["total_return"] < spy["total_return"]:
                             worse_count += 1
+                            st.caption("Fell harder than the market")
+                        else:
+                            st.caption("Held up better than the market")
     if compared:
         if worse_count == 0:
             st.success(f"This mix would have dropped **less** than the market in every crash we could check ({compared} of {compared}).")
@@ -158,25 +165,26 @@ else:
         else:
             st.info(f"This mix would have dropped more than the market in {worse_count} of the {compared} crashes we could check.")
 
+    st.divider()
     st.subheader("How steady it has been")
     steady = engine.rolling_win_rate(weights, returns[tickers])
     monthly = steady["monthly"]
     ups = int((monthly > 0).sum())
     total_months = len(monthly)
-    s1, s2 = st.columns([1, 3])
-    s1.metric("Months that ended up", f"{ups} of {total_months}", help="Over the last 3 years, how many calendar months this mix gained value. Around 60% is typical for the overall market.")
-    with s2:
-        monthly_df = monthly.reset_index()
-        monthly_df.columns = ["Month", "Return"]
-        monthly_df["Direction"] = monthly_df["Return"].apply(lambda r: "Up" if r >= 0 else "Down")
-        chart = alt.Chart(monthly_df).mark_bar().encode(
-            x=alt.X("Month:T", title=None),
-            y=alt.Y("Return:Q", title="Monthly change", axis=alt.Axis(format="%")),
-            color=alt.Color("Direction:N", scale=alt.Scale(domain=["Up", "Down"], range=["#2ecc71", "#e74c3c"]), legend=None),
-            tooltip=[alt.Tooltip("Month:T", title="Month", format="%b %Y"), alt.Tooltip("Return:Q", title="Change", format=".1%")]
-        ).properties(height=220)
-        st.altair_chart(chart, use_container_width=True)
+    st.markdown(f"#### {ups} of the last {total_months} months ended up")
+    st.caption("How many calendar months this mix gained value over the last 3 years. Around 6 in 10 is typical for the overall market.")
+    monthly_df = monthly.reset_index()
+    monthly_df.columns = ["Month", "Return"]
+    monthly_df["Direction"] = monthly_df["Return"].apply(lambda r: "Up" if r >= 0 else "Down")
+    chart = alt.Chart(monthly_df).mark_bar().encode(
+        x=alt.X("Month:T", title=None),
+        y=alt.Y("Return:Q", title="Monthly change", axis=alt.Axis(format="%")),
+        color=alt.Color("Direction:N", scale=alt.Scale(domain=["Up", "Down"], range=["#2ecc71", "#e74c3c"]), legend=None),
+        tooltip=[alt.Tooltip("Month:T", title="Month", format="%b %Y"), alt.Tooltip("Return:Q", title="Change", format=".1%")]
+    ).properties(height=240)
+    st.altair_chart(chart, use_container_width=True)
 
+    st.divider()
     st.subheader("Where your money really is")
     left, right = st.columns(2)
     with left:
@@ -198,6 +206,7 @@ else:
         if facts["non_eq"] > 0.005:
             st.caption(f"Bonds, gold, or other non-stock funds: {facts['non_eq']*100:.0f}% of your invested money.")
 
+    st.divider()
     with st.expander("Learn the ideas — a 5-minute read"):
         st.write("#### Owning more stocks isn't the same as being spread out")
         st.write("Owning 20 different tickers *feels* diversified because it's a big number. But if all 20 are large tech companies, they'll rise and fall together in a downturn — you're really making one big bet (\"tech will do well\") spread across 20 names. That's what **real bets** measures: how many genuinely separate bets you're making, not how many tickers are on the list.")
