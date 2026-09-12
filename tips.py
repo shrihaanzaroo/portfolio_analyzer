@@ -7,8 +7,11 @@ SECTOR_VERY_HEAVY = 65
 VOL_RATIO_HIGH = 1.3
 CASH_HEAVY = 0.25
 FEW_BETS_RATIO = 0.5
+MAX_TIPS = 5
+MAX_CLUSTERS = 2
 
 LEVEL_ORDER = {"high": 0, "medium": 1, "good": 2}
+COUNT_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
 
 
 def sector_examples(max_per_sector=3):
@@ -26,6 +29,34 @@ def is_fund(ticker):
 
 def pct(x):
     return f"{x * 100:.0f}%"
+
+
+def join_names(names):
+    if len(names) <= 2:
+        return " and ".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def redundant_clusters(pairs):
+    neighbours = {}
+    for a, b, _, _ in pairs:
+        neighbours.setdefault(a, set()).add(b)
+        neighbours.setdefault(b, set()).add(a)
+    clusters = []
+    seen = set()
+    for start in neighbours:
+        if start in seen:
+            continue
+        members, stack = set(), [start]
+        while stack:
+            t = stack.pop()
+            if t in members:
+                continue
+            members.add(t)
+            stack.extend(neighbours[t] - members)
+        seen |= members
+        clusters.append(members)
+    return clusters
 
 
 def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cutoff=0.75):
@@ -75,22 +106,30 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
             })
 
     if n >= 3 and true_bets < FEW_BETS_RATIO * n:
-        corr_text = f" — on average they move together with a correlation of {avg_corr:.2f}" if avg_corr is not None else ""
+        corr_text = f" — on average their moves match about {pct(max(0, avg_corr))} of the time" if avg_corr is not None else ""
         tips.append({
             "level": "high",
-            "title": f"Your {n} holdings act like only about {true_bets:.1f} separate bets",
+            "title": f"Your {n} holdings act like only about {true_bets:.1f} real bets",
             "why": f"They tend to rise and fall at the same time{corr_text}. When that happens, owning more of them doesn't protect you — a bad day for one is a bad day for all.",
             "action": "Add something that moves differently: a company from a different industry, a bond fund like BND, or an international fund like EFA. Another stock similar to the ones you already own mostly won't count as a new bet.",
         })
 
-    if redundant:
-        a, b, c, _ = redundant[0]
-        extra = f" There are {len(redundant) - 1} more pairs like this." if len(redundant) > 1 else ""
+    clusters = []
+    for members in redundant_clusters(redundant):
+        inside = [p for p in redundant if p[0] in members and p[1] in members]
+        clusters.append({
+            "names": sorted(members, key=lambda t: (-total_weights[t], t)),
+            "corr": sum(p[2] for p in inside) / len(inside),
+            "money": sum(total_weights[t] for t in members),
+        })
+    clusters.sort(key=lambda c: (-len(c["names"]), -c["money"]))
+    for c in clusters[:MAX_CLUSTERS]:
+        names = c["names"]
         tips.append({
             "level": "medium",
-            "title": f"{a} and {b} move almost in lockstep (correlation {c:.2f})",
-            "why": f"Owning both feels like two holdings but behaves like one bigger one.{extra}",
-            "action": f"Keep whichever of {a} or {b} you understand and believe in more. If you keep both, think of them as one position when deciding how much to invest.",
+            "title": f"{join_names(names)} move together — they act like one bet",
+            "why": f"When one of them has a bad day the others usually do too (their moves match about {c['corr'] * 100:.0f}% of the time). Together they are {pct(c['money'])} of your money, so this is really one big bet, not {COUNT_WORDS.get(len(names), str(len(names)))}.",
+            "action": "Treat them as one position when deciding how much to invest. To turn them into real separate bets, keep the one you believe in most and move the rest into something that moves differently — the moves at the top of the page (“Your best moves”) show exactly how.",
         })
 
     if overlaps and overlaps[0][2] >= 0.01:
@@ -117,13 +156,21 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
             "action": f"Add something from {where}, or a broad index fund like VTI that covers every industry in one go.",
         })
 
+    if cash_share > CASH_HEAVY:
+        tips.append({
+            "level": "medium",
+            "title": f"{pct(cash_share)} of your money is sitting in cash",
+            "why": "Cash is a fine cushion, but it doesn't grow — and your grade is discounted because so little is actually invested.",
+            "action": "Decide on purpose how much cushion you want (many people keep a few months of expenses outside investing entirely), then put the rest to work in a broad fund.",
+        })
+
     if n >= 2:
         if hedges:
             best = min(hedges, key=lambda t: hedge_corr[t])
             tips.append({
                 "level": "good",
                 "title": f"{best} acts as a safety net",
-                "why": f"It moves independently of the rest of your portfolio (correlation {hedge_corr[best]:.2f}), so it tends to hold up on days the others fall.",
+                "why": f"It moves independently of the rest of your portfolio (its moves match the others only about {pct(max(0, hedge_corr[best]))} of the time), so it tends to hold up on days the others fall.",
                 "action": "Keep it. This is what makes a bad month survivable.",
             })
         else:
@@ -139,24 +186,16 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
             tips.append({
                 "level": "medium",
                 "title": f"Your portfolio swings about {pct(vol_ratio - 1)} more than the market",
-                "why": f"In a typical year the S&P 500 moves around ±{pct(spy_vol)}; yours moves around ±{pct(port_vol)}. The real danger isn't the drop itself — it's selling in a panic during one.",
+                "why": f"Your typical yearly swing is about ±{pct(port_vol)}, versus ±{pct(spy_vol)} for the S&P 500. The real danger isn't the drop itself — it's selling in a panic during one.",
                 "action": "Every fix above (spreading across industries, adding a cushion) lowers this number. So does owning a broad index fund as your core.",
             })
         elif vol_ratio <= 1.0:
             tips.append({
                 "level": "good",
                 "title": "Your ride is no bumpier than the market's",
-                "why": f"Your portfolio moves about ±{pct(port_vol)} in a typical year, versus ±{pct(spy_vol)} for the S&P 500.",
+                "why": f"Your typical yearly swing is about ±{pct(port_vol)}, versus ±{pct(spy_vol)} for the S&P 500.",
                 "action": "Keep it that way as you add holdings — check this number again after changes.",
             })
-
-    if cash_share > CASH_HEAVY:
-        tips.append({
-            "level": "medium",
-            "title": f"{pct(cash_share)} of your money is sitting in cash",
-            "why": "Cash is a fine cushion, but it doesn't grow — and your grade is discounted because so little is actually invested.",
-            "action": "Decide on purpose how much cushion you want (many people keep a few months of expenses outside investing entirely), then put the rest to work in a broad fund.",
-        })
 
     if not redundant and n >= 2:
         tips.append({
@@ -175,6 +214,9 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
         })
 
     tips.sort(key=lambda t: LEVEL_ORDER[t["level"]])
+    # the page is about what to fix, so one "already working" note is enough
+    good = [t for t in tips if t["level"] == "good"][:1]
+    tips = ([t for t in tips if t["level"] != "good"] + good)[:MAX_TIPS]
 
     grade = card["overall"]
     if n == 1:
@@ -182,9 +224,9 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
         grade = max(grade, "D")
         verdict = f"Everything is riding on one company. Whatever happens to {biggest} happens to you."
     elif grade in ("A", "B"):
-        verdict = f"Looking solid. Your {n} holdings act like about {true_bets:.1f} genuinely separate bets."
+        verdict = f"Looking solid. Your {n} holdings act like about {true_bets:.1f} real bets."
     elif grade == "C":
-        verdict = f"A decent start — but more of your money is riding on the same thing than it looks. {n} holdings, acting like about {true_bets:.1f} bets."
+        verdict = f"A decent start — but more of your money is riding on the same thing than it looks. {n} holdings, acting like about {true_bets:.1f} real bets."
     else:
         verdict = f"Your holdings mostly move together. This is closer to one big bet wearing {n} different names ({true_bets:.1f} real bets)."
 

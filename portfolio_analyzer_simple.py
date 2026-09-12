@@ -2,12 +2,31 @@ import pandas as pd
 import altair as alt
 import streamlit as st
 import engine
+import history
+import optimizer
+import regions
 import tips
 
 st.set_page_config(page_title="Portfolio Check-Up", page_icon="🩺", layout="wide")
 cached_download = st.cache_data(show_spinner="Downloading price history...")(engine.download_prices)
 
 LEVEL_BOX = {"high": st.error, "medium": st.warning, "good": st.success}
+PERIOD = "3y"
+BENCHMARKS = {
+    "S&P 500 (the US stock market)": {"SPY": 1.0},
+    "Nasdaq-100 (big tech)": {"QQQ": 1.0},
+    "Whole US market (VTI)": {"VTI": 1.0},
+    "Bonds (BND)": {"BND": 1.0},
+    "60% stocks / 40% bonds": {"SPY": 0.6, "BND": 0.4},
+    "Gold (GLD)": {"GLD": 1.0},
+}
+BENCHMARK_TICKERS = sorted({t for mix in BENCHMARKS.values() for t in mix})
+DEFAULT_BENCHMARK = next(iter(BENCHMARKS))
+CUSTOM_OPTION = "Another ticker…"
+YOU_COLOR = "#2a78d6"
+BENCH_COLOR = "#898781"
+SLICE_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7"]
+ASSET_COLORS = {"Stocks": "#2a78d6", "Bonds": "#1baf7a", "Gold": "#eda100", "Cash": "#008300"}
 
 
 def holdings_df_to_dict(df):
@@ -25,6 +44,68 @@ def holdings_to_weights(holdings, prices):
     values = {t: float(prices[t].dropna().iloc[-1]) * shares for t, shares in holdings.items()}
     total = sum(values.values())
     return {t: v / total for t, v in values.items()}, total
+
+
+def download_list(tickers):
+    return list(dict.fromkeys(sorted(tickers) + ["SPY"] + BENCHMARK_TICKERS + list(optimizer.CANDIDATES)))
+
+
+@st.cache_data(show_spinner="Looking for better mixes...")
+def cached_swaps(holdings_items, cash, period):
+    holdings = dict(holdings_items)
+    prices = cached_download(download_list(list(holdings)), period)
+    return optimizer.suggest_swaps(holdings, prices, engine.compute_returns(prices), cash, k=3)
+
+
+def pct(x):
+    return "n/a" if x != x else f"{round(x * 100):.0f}%"
+
+
+def signed_pct(x):
+    return "n/a" if x != x else f"{round(x * 100):+.0f}%"
+
+
+def before_after(swap):
+    b, a = swap["before"], swap["after"]
+    return " · ".join([
+        f"Grade {b['grade']} → {a['grade']}",
+        f"Real bets {b['true_bets']:.1f} → {a['true_bets']:.1f}",
+        f"Typical yearly swing {pct(b['volatility'])} → {pct(a['volatility'])}",
+        f"Worst drop {pct(b['max_drawdown'])} → {pct(a['max_drawdown'])}",
+        f"Yearly return {pct(b['annual_return'])} → {pct(a['annual_return'])}",
+    ])
+
+
+def compare_chart(wide, kind, y_title, y_format, height, zero):
+    names = list(wide.columns)
+    long = wide.rename_axis("Date").reset_index().melt("Date", var_name="Series", value_name="Value")
+    hover = alt.selection_point(fields=["Date"], nearest=True, on="mouseover", empty=False)
+    base = alt.Chart(long).encode(
+        x=alt.X("Date:T", title=None),
+        y=alt.Y("Value:Q", title=y_title, axis=alt.Axis(format=y_format), scale=alt.Scale(zero=zero)),
+        color=alt.Color("Series:N", scale=alt.Scale(domain=names, range=[YOU_COLOR, BENCH_COLOR]), legend=alt.Legend(title=None, orient="top")),
+    )
+    body = base.mark_area(fillOpacity=0.35, line=True) if kind == "area" else base.mark_line(strokeWidth=2)
+    dots = base.mark_point(size=50, filled=True).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)))
+    rule = alt.Chart(long).transform_pivot("Series", value="Value", groupby=["Date"]).mark_rule(color="#c3c2b7").encode(
+        x="Date:T",
+        opacity=alt.condition(hover, alt.value(1), alt.value(0)),
+        tooltip=[alt.Tooltip("Date:T", title="Date", format="%b %d, %Y")]
+        + [alt.Tooltip(field=n.replace(".", "\\."), type="quantitative", title=n, format=y_format) for n in names],
+    ).add_params(hover)
+    return alt.layer(body, dots, rule).properties(height=height)
+
+
+def donut(rows, field, title, colors):
+    df = pd.DataFrame(rows)
+    df["share"] = df["pct"] / 100
+    names = df[field].tolist()
+    return alt.Chart(df).mark_arc(innerRadius=60).encode(
+        theta=alt.Theta("pct:Q"),
+        order=alt.Order("pct:Q", sort="descending"),
+        color=alt.Color(f"{field}:N", scale=alt.Scale(domain=names, range=colors), legend=alt.Legend(title=None, orient="bottom", columns=3)),
+        tooltip=[alt.Tooltip(f"{field}:N", title=title), alt.Tooltip("share:Q", title="Share", format=".0%")],
+    ).properties(height=260)
 
 
 if "holdings_df" not in st.session_state:
@@ -62,8 +143,6 @@ if duplicates:
 
 cash_input = st.sidebar.number_input("Cash ($)", min_value=0.0, value=st.session_state.cash, step=100.0, help="Money you've set aside but not invested.")
 
-period = "3y"
-
 if st.sidebar.button("Analyze", type="primary", use_container_width=True):
     st.session_state.holdings_df = holdings_df
     st.session_state.cash = cash_input
@@ -73,16 +152,17 @@ if st.sidebar.button("Analyze", type="primary", use_container_width=True):
         st.stop()
 
     tickers = list(holdings.keys())
-    prices = cached_download(list(dict.fromkeys(tickers + ["SPY"])), period)
+    prices = cached_download(download_list(tickers), PERIOD)
 
-    missing = [t for t in tickers if prices[t].dropna().empty]
+    missing = [t for t in tickers if t not in prices.columns or prices[t].dropna().empty]
     if missing:
-        st.error(f"No price data available for: {', '.join(missing)}. This can happen with a mistyped ticker, or if Yahoo Finance is rate-limiting — try again in a moment.")
+        st.error(f"No price data available for: {', '.join(missing)}. This can happen with a mistyped ticker, or if Yahoo Finance is busy — try again in a moment.")
         st.stop()
 
-    returns = engine.compute_returns(prices)
+    st.session_state.holdings = holdings
+    st.session_state.prices = prices
+    st.session_state.returns = engine.compute_returns(prices)
     st.session_state.weights, st.session_state.stock_value = holdings_to_weights(holdings, prices)
-    st.session_state.returns = returns
     st.session_state.tickers = tickers
 
 
@@ -91,8 +171,9 @@ st.caption("A plain-English look at whether your investments are really spread o
 
 if st.session_state.weights is None:
     st.info(
-        "**What this does:** you tell it what you own, and it tells you whether those holdings are actually "
-        "different from each other — or secretly one big bet — and gives you concrete things to try. "
+        "**What this does:** you tell it what you own, and it gives you a grade, the specific moves that would "
+        "improve it, how your money has grown compared with the market, and where it really is — by type, "
+        "by country, and by industry. "
         "Your holdings live in the **sidebar** (on a phone, tap the **›** arrow at the top-left to open it). "
         "The defaults there are just an example: edit them, then tap **Analyze**."
     )
@@ -100,8 +181,13 @@ else:
     weights = st.session_state.weights
     returns = st.session_state.returns
     tickers = st.session_state.tickers
-    total_value = st.session_state.stock_value + st.session_state.cash
+    holdings = st.session_state.holdings
+    cash = st.session_state.cash
+    total_value = st.session_state.stock_value + cash
     invested_share = st.session_state.stock_value / total_value if total_value > 0 else 1.0
+    weights_with_cash = {t: w * invested_share for t, w in weights.items()}
+    if invested_share < 1:
+        weights_with_cash["CASH"] = 1 - invested_share
 
     advice = tips.build_tips(weights, returns, invested_share)
     facts = advice["facts"]
@@ -118,13 +204,64 @@ else:
         v.caption("Real bets = how many genuinely separate bets your holdings add up to, once the ones that move together are counted as one. Grades run A to F, and are discounted if most of your money is sitting in cash.")
 
     st.divider()
-    st.subheader("What to do first")
+    st.subheader("Your best moves")
+    st.caption("One trade each, ranked by how much it would have improved this mix over the last 3 years.")
+    swaps = cached_swaps(tuple(sorted(holdings.items())), cash, PERIOD)
+    for swap in swaps:
+        with st.container(border=True):
+            st.markdown(f"**{swap['text']}**")
+            st.write(swap["why"])
+            st.markdown(before_after(swap))
+    if not swaps and advice["grade"] in ("A", "B"):
+        st.info("We couldn't find a single swap that clearly improves this mix — that's a good sign.")
+    elif not swaps:
+        st.info("No single swap would clearly improve this mix. The notes below explain what is holding the grade down.")
+    st.caption("Typical yearly swing = how much a normal year moves this mix up or down. Worst drop = the biggest fall from a high point before it recovered. Share counts use today's prices and are rounded. Educational only — not financial advice.")
+
+    st.divider()
+    st.subheader("What's behind that")
     st.caption("Ordered by how much they matter. Red = worth fixing, yellow = worth knowing, green = already working.")
     for tip in advice["tips"]:
         with st.container(border=True):
             LEVEL_BOX[tip["level"]](f"**{tip['title']}**")
             st.write(f"**Why it matters:** {tip['why']}")
             st.write(f"**Try this:** {tip['action']}")
+
+    st.divider()
+    st.subheader("How it has grown")
+    st.caption("What $10,000 in this exact mix would be worth today, next to whatever you pick to compare it with.")
+    pick, custom_col = st.columns(2)
+    choice = pick.selectbox("Compare with", list(BENCHMARKS) + [CUSTOM_OPTION])
+    bench_label, bench_weights, bench_returns = DEFAULT_BENCHMARK, BENCHMARKS[DEFAULT_BENCHMARK], returns
+    if choice in BENCHMARKS:
+        bench_label, bench_weights = choice, BENCHMARKS[choice]
+    else:
+        custom = custom_col.text_input("Ticker to compare with", value="").strip().upper()
+        if custom:
+            try:
+                custom_prices = cached_download([custom], PERIOD)
+            except Exception:
+                custom_prices = pd.DataFrame()
+            if custom_prices.empty or custom not in custom_prices.columns or custom_prices[custom].dropna().empty:
+                st.error(f"No price data for {custom} — comparing with the S&P 500 instead.")
+            else:
+                bench_label, bench_weights, bench_returns = custom, {custom: 1.0}, engine.compute_returns(custom_prices)
+    bench_name = bench_label.split(" (")[0]
+
+    your_daily = history.portfolio_daily(weights, returns[tickers])
+    bench_daily = engine.portfolio_returns(bench_weights, bench_returns).dropna()
+    both = pd.concat([your_daily.rename("You"), bench_daily.rename(bench_name)], axis=1, join="inner")
+    if both.empty:
+        st.warning(f"You and {bench_name} don't share enough price history to compare.")
+    else:
+        st.altair_chart(compare_chart(both.apply(history.growth_of), "line", "Value of $10,000", "$,.0f", 300, zero=False), use_container_width=True)
+        yours, bench = history.summary(both["You"]), history.summary(both[bench_name])
+        st.markdown(f"Total return since {both.index[0]:%b %Y}: you **{signed_pct(yours['total_return'])}** · {bench_name} **{signed_pct(bench['total_return'])}**")
+        st.markdown(f"Worst drop along the way: you **{pct(yours['max_drawdown'])}** · {bench_name} **{pct(bench['max_drawdown'])}**")
+        st.markdown(f"Typical yearly swing: you **{pct(yours['volatility'])}** · {bench_name} **{pct(bench['volatility'])}**")
+        st.caption("The worst drop is how far your money fell from its highest point before recovering — the number that makes people panic-sell.")
+        st.altair_chart(compare_chart(both.apply(history.drawdown_series), "area", "How far below its previous high", "%", 220, zero=True), use_container_width=True)
+        st.caption("Every dip is a stretch where your money sat below its previous high. Deeper and longer means more painful.")
 
     st.divider()
     st.subheader("How it would have held up in past crashes")
@@ -161,7 +298,7 @@ else:
         if worse_count == 0:
             st.success(f"This mix would have dropped **less** than the market in every crash we could check ({compared} of {compared}).")
         elif worse_count == compared:
-            st.warning(f"This mix would have dropped **more** than the market in every crash we could check ({compared} of {compared}). The tips above are how you soften that.")
+            st.warning(f"This mix would have dropped **more** than the market in every crash we could check ({compared} of {compared}). The moves at the top of the page are how you soften that.")
         else:
             st.info(f"This mix would have dropped more than the market in {worse_count} of the {compared} crashes we could check.")
 
@@ -186,6 +323,17 @@ else:
 
     st.divider()
     st.subheader("Where your money really is")
+    left, right = st.columns(2)
+    with left:
+        st.write("**By type of investment**")
+        rows = regions.asset_mix(weights_with_cash)
+        st.altair_chart(donut(rows, "asset", "Type", [ASSET_COLORS.get(r["asset"], SLICE_COLORS[-1]) for r in rows]), use_container_width=True)
+        st.caption(" · ".join(f"{r['asset']} {r['pct']:.0f}%" for r in rows))
+    with right:
+        st.write("**By country**")
+        rows = regions.country_mix(weights_with_cash)
+        st.altair_chart(donut(rows, "country", "Country", SLICE_COLORS[:len(rows)]), use_container_width=True)
+        st.caption(" · ".join(f"{r['country']} {r['pct']:.0f}%" for r in rows))
     left, right = st.columns(2)
     with left:
         st.write("**By holding** — share of everything you own, including cash")
