@@ -80,15 +80,22 @@ def late_start_note(frame, tickers, daily, requested_start, then="so the chart s
     return f" — {culprit} didn't exist before then, {then}"
 
 
-def before_after(swap):
-    b, a = swap["before"], swap["after"]
-    return " · ".join([
-        f"Grade {b['grade']} → {a['grade']}",
-        f"Real bets {b['true_bets']:.1f} → {a['true_bets']:.1f}",
-        f"Typical yearly swing {pct(b['volatility'])} → {pct(a['volatility'])}",
-        f"Worst drop {pct(b['max_drawdown'])} → {pct(a['max_drawdown'])}",
-        f"Return per year {pct(b['annual_return'])} → {pct(a['annual_return'])}",
-    ])
+MOVE_STATS = [
+    ("Real bets", "true_bets", lambda x: f"{x:.1f}", True),
+    ("Typical yearly swing", "volatility", pct, False),
+    ("Worst drop", "max_drawdown", pct, True),
+    ("Return per year", "annual_return", pct, True),
+]
+
+
+def stat_chip(col, label, before, after, fmt, higher_is_better):
+    if fmt(after) == fmt(before):
+        verdict = "about the same"
+    elif (after > before) == higher_is_better:
+        verdict = ":green[better]"
+    else:
+        verdict = ":red[worse]"
+    col.markdown(f"**{label}**  \n{fmt(before)} → {fmt(after)}  \n{verdict}")
 
 
 def compare_chart(wide, kind, y_title, y_format, height, zero, colors=None):
@@ -259,11 +266,16 @@ else:
     st.subheader("Your best moves")
     st.caption(f"One trade each, ranked by how much it would have improved this mix over the last {GRADE_YEARS} years. They show what would change the grade — they are not advice to buy or sell.")
     swaps = cached_swaps(tuple(sorted(holdings.items())), cash, GRADE_YEARS)
-    for swap in swaps:
+    for i, swap in enumerate(swaps, 1):
         with st.container(border=True):
-            st.markdown(f"**{swap['text']}**")
-            st.write(swap["why"])
-            st.markdown(before_after(swap))
+            head, grade_col = st.columns([4, 1])
+            head.caption(f"MOVE {i}")
+            head.markdown(f"### {swap['text']}")
+            head.write(swap["why"])
+            grade_col.caption("Grade")
+            grade_col.markdown(f"## {swap['before']['grade']} → {swap['after']['grade']}")
+            for col, (label, key, fmt, higher_is_better) in zip(st.columns(4), MOVE_STATS):
+                stat_chip(col, label, swap["before"][key], swap["after"][key], fmt, higher_is_better)
     if not swaps and advice["grade"] in ("A", "B"):
         st.info("We couldn't find a single swap that clearly improves this mix — that's a good sign.")
     elif not swaps:
@@ -383,7 +395,7 @@ else:
     monthly = steady["monthly"]
     ups = int((monthly > 0).sum())
     total_months = len(monthly)
-    st.markdown(f"#### {ups} of the last {total_months} months ended up")
+    st.markdown(f"#### {ups} of the last {total_months} months ended positive")
     st.caption(f"How many calendar months this mix gained value over the last {steady_years} years. Around 6 in 10 is typical for the overall market.")
     monthly_df = monthly.reset_index()
     monthly_df.columns = ["Month", "Return"]
