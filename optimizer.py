@@ -95,7 +95,7 @@ def swap_text(sell, n, total, buy, m):
 
 
 def suggest_swaps(holdings, prices, returns, cash, k=3):
-    holdings = {t: int(s) for t, s in holdings.items() if s > 0 and latest_price(prices, t)}
+    holdings = {t: s for t, s in holdings.items() if s > 0 and latest_price(prices, t)}
     if not holdings or k <= 0:
         return []
     price_of = {t: latest_price(prices, t) for t in holdings}
@@ -113,7 +113,7 @@ def suggest_swaps(holdings, prices, returns, cash, k=3):
     for sell in sources:
         total = holdings[sell]
         for buy in candidates:
-            for n in sorted({max(1, round(f * total)) for f in FRACTIONS}):
+            for n in sorted({min(total, max(1, round(f * total))) for f in FRACTIONS}):
                 m = math.floor(n * price_of[sell] / price_of[buy])
                 if m < 1:
                     continue

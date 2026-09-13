@@ -1,3 +1,5 @@
+import pandas as pd
+
 import engine
 
 
@@ -47,3 +49,37 @@ def summary(daily):
         "max_drawdown": max_drawdown(clean),
         "volatility": float(engine.ann_vol(clean)),
     }
+
+
+def window_start(returns, years=None):
+    if years is None:
+        return returns.index[0]
+    return returns.index[-1] - pd.DateOffset(years=years)
+
+
+def window(returns, years=None):
+    if years is None or returns.empty:
+        return returns
+    return returns[returns.index >= window_start(returns, years)]
+
+
+def date_text(date):
+    return f"{date:%b} {date.day}, {date.year}"
+
+
+def date_range_text(series):
+    return f"{date_text(series.index[0])} – {date_text(series.index[-1])}"
+
+
+def short_range_text(start, end):
+    start, end = pd.Timestamp(start), pd.Timestamp(end)
+    if start.year != end.year:
+        return f"{date_text(start)} – {date_text(end)}"
+    return f"{start:%b} {start.day} – {date_text(end)}"
+
+
+def late_starter(firsts, actual_start, requested_start, grace_days=30):
+    if actual_start <= requested_start + pd.Timedelta(days=grace_days):
+        return None
+    known = {t: d for t, d in firsts.items() if d is not None}
+    return max(known, key=known.get) if known else None

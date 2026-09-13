@@ -64,7 +64,6 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
     n = len(tickers)
 
     tb = engine.true_bets(weights, returns)
-    eb = engine.effective_bets(weights)
     sec = engine.sector_concentration(weights)
     port_vol = engine.portfolio_vol(weights, returns[tickers])
     spy_vol = engine.ann_vol(returns["SPY"])
@@ -75,9 +74,8 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
         is_hedge, hedge_corr = engine.hedge_detection(weights, returns, hedge_cutoff)
     else:
         is_hedge, hedge_corr = {}, {}
-    hedges = [t for t in tickers if is_hedge.get(t)]
-
     total_weights = {t: w * invested_share for t, w in weights.items()}
+    hedges = [t for t in tickers if is_hedge.get(t) and total_weights[t] <= BIG_POSITION]
     cash_share = 1 - invested_share
     biggest, biggest_w = max(total_weights.items(), key=lambda kv: kv[1])
     vol_ratio = port_vol / spy_vol if spy_vol > 0 else None
@@ -224,11 +222,11 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
         grade = max(grade, "D")
         verdict = f"Everything is riding on one company. Whatever happens to {biggest} happens to you."
     elif grade in ("A", "B"):
-        verdict = f"Looking solid. Your {n} holdings act like about {true_bets:.1f} real bets."
+        verdict = "Looking solid — your holdings are genuinely spread out."
     elif grade == "C":
-        verdict = f"A decent start — but more of your money is riding on the same thing than it looks. {n} holdings, acting like about {true_bets:.1f} real bets."
+        verdict = "A decent start — but more of your money is riding on the same thing than it looks."
     else:
-        verdict = f"Your holdings mostly move together. This is closer to one big bet wearing {n} different names ({true_bets:.1f} real bets)."
+        verdict = "Your holdings mostly move together — this is closer to one big bet wearing different names."
 
     return {
         "grade": grade,
@@ -238,10 +236,6 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
         "facts": {
             "holdings": n,
             "true_bets": true_bets,
-            "effective_bets": eb,
-            "avg_corr": avg_corr,
-            "port_vol": port_vol,
-            "spy_vol": spy_vol,
             "biggest": biggest,
             "biggest_pct": biggest_w * 100,
             "total_weights": total_weights,

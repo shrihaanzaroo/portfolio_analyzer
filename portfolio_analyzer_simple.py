@@ -1,6 +1,7 @@
 import pandas as pd
 import altair as alt
 import streamlit as st
+import brokerage_csv
 import engine
 import history
 import optimizer
@@ -11,11 +12,14 @@ st.set_page_config(page_title="Portfolio Check-Up", page_icon="🩺", layout="wi
 cached_download = st.cache_data(show_spinner="Downloading price history...")(engine.download_prices)
 
 LEVEL_BOX = {"high": st.error, "medium": st.warning, "good": st.success}
-PERIOD = "3y"
+PERIOD = "max"
+GRADE_YEARS = 3
+GROWTH_WINDOWS = {"1 year": 1, "3 years": 3, "5 years": 5, "10 years": 10, "All history": None}
+STEADY_WINDOWS = {"3 years": 3, "5 years": 5, "10 years": 10}
 BENCHMARKS = {
-    "S&P 500 (the US stock market)": {"SPY": 1.0},
+    "S&P 500 (the 500 biggest US companies)": {"SPY": 1.0},
     "Nasdaq-100 (big tech)": {"QQQ": 1.0},
-    "Whole US market (VTI)": {"VTI": 1.0},
+    "Whole US market (VTI — every US company, big and small)": {"VTI": 1.0},
     "Bonds (BND)": {"BND": 1.0},
     "60% stocks / 40% bonds": {"SPY": 0.6, "BND": 0.4},
     "Gold (GLD)": {"GLD": 1.0},
@@ -36,8 +40,8 @@ def holdings_df_to_dict(df):
         shares = row["Shares"]
         if not ticker or pd.isna(shares) or shares <= 0:
             continue
-        holdings[ticker] = holdings.get(ticker, 0) + int(shares)
-    return holdings
+        holdings[ticker] = holdings.get(ticker, 0) + float(shares)
+    return {t: int(s) if s.is_integer() else round(s, 4) for t, s in holdings.items()}
 
 
 def holdings_to_weights(holdings, prices):
@@ -51,10 +55,11 @@ def download_list(tickers):
 
 
 @st.cache_data(show_spinner="Looking for better mixes...")
-def cached_swaps(holdings_items, cash, period):
+def cached_swaps(holdings_items, cash, years):
     holdings = dict(holdings_items)
-    prices = cached_download(download_list(list(holdings)), period)
-    return optimizer.suggest_swaps(holdings, prices, engine.compute_returns(prices), cash, k=3)
+    prices = cached_download(download_list(list(holdings)), PERIOD)
+    returns = history.window(engine.compute_returns(prices), years)
+    return optimizer.suggest_swaps(holdings, prices, returns, cash, k=3)
 
 
 def pct(x):
@@ -65,6 +70,15 @@ def signed_pct(x):
     return "n/a" if x != x else f"{round(x * 100):+.0f}%"
 
 
+def late_start_note(frame, tickers, daily, requested_start, then="so the chart starts there", extra=None):
+    firsts = {t: frame[t].first_valid_index() for t in tickers}
+    firsts.update(extra or {})
+    culprit = history.late_starter(firsts, daily.index[0], requested_start)
+    if culprit is None:
+        return ""
+    return f" — {culprit} didn't exist before then, {then}"
+
+
 def before_after(swap):
     b, a = swap["before"], swap["after"]
     return " · ".join([
@@ -72,7 +86,7 @@ def before_after(swap):
         f"Real bets {b['true_bets']:.1f} → {a['true_bets']:.1f}",
         f"Typical yearly swing {pct(b['volatility'])} → {pct(a['volatility'])}",
         f"Worst drop {pct(b['max_drawdown'])} → {pct(a['max_drawdown'])}",
-        f"Yearly return {pct(b['annual_return'])} → {pct(a['annual_return'])}",
+        f"Return per year {pct(b['annual_return'])} → {pct(a['annual_return'])}",
     ])
 
 
@@ -119,12 +133,41 @@ if "cash" not in st.session_state:
     st.session_state.cash = 0.0
 
 st.sidebar.header("What you own")
+uploaded = st.sidebar.file_uploader(
+    "Upload a CSV from your brokerage (Fidelity, Schwab, Robinhood, Vanguard…)",
+    type=["csv"],
+    help="Export the Positions or Holdings page as a CSV. For Robinhood, use the account activity report.",
+)
+if uploaded is not None:
+    file_key = f"{uploaded.name}:{uploaded.size}"
+    if st.session_state.get("csv_applied") != file_key:
+        try:
+            parsed = brokerage_csv.parse(uploaded.getvalue())
+        except ValueError as e:
+            st.sidebar.error(str(e))
+        else:
+            shares = dict(parsed["shares"])
+            if parsed["value_only"]:
+                latest = cached_download(list(parsed["value_only"]), "1mo")
+                for t, dollars in parsed["value_only"].items():
+                    if t in latest.columns and not latest[t].dropna().empty:
+                        shares[t] = round(dollars / float(latest[t].dropna().iloc[-1]), 2)
+            st.session_state.holdings_df = pd.DataFrame({"Ticker": list(shares), "Shares": list(shares.values())})
+            if parsed["cash"] > 0:
+                st.session_state.cash = float(parsed["cash"])
+            st.session_state.csv_applied = file_key
+            st.session_state.csv_notes = parsed["notes"]
+            st.rerun()
+    if st.session_state.get("csv_notes") is not None:
+        st.sidebar.success("Loaded your holdings from the file. Check them below, then tap Analyze.")
+        for note in st.session_state.csv_notes:
+            st.sidebar.caption(note)
 holdings_df = st.sidebar.data_editor(
     st.session_state.holdings_df,
     num_rows="dynamic",
     column_config={
         "Ticker": st.column_config.TextColumn("Ticker"),
-        "Shares": st.column_config.NumberColumn("Shares", min_value=0, step=1),
+        "Shares": st.column_config.NumberColumn("Shares", min_value=0),
     },
     hide_index=True,
 )
@@ -153,8 +196,9 @@ if st.sidebar.button("Analyze", type="primary", use_container_width=True):
 
     tickers = list(holdings.keys())
     prices = cached_download(download_list(tickers), PERIOD)
+    recent = history.window(prices, GRADE_YEARS)
 
-    missing = [t for t in tickers if t not in prices.columns or prices[t].dropna().empty]
+    missing = [t for t in tickers if t not in prices.columns or recent[t].dropna().empty]
     if missing:
         st.error(f"No price data available for: {', '.join(missing)}. This can happen with a mistyped ticker, or if Yahoo Finance is busy — try again in a moment.")
         st.stop()
@@ -163,7 +207,6 @@ if st.sidebar.button("Analyze", type="primary", use_container_width=True):
     st.session_state.prices = prices
     st.session_state.returns = engine.compute_returns(prices)
     st.session_state.weights, st.session_state.stock_value = holdings_to_weights(holdings, prices)
-    st.session_state.tickers = tickers
 
 
 st.title("Portfolio Check-Up")
@@ -180,17 +223,19 @@ if st.session_state.weights is None:
 else:
     weights = st.session_state.weights
     returns = st.session_state.returns
-    tickers = st.session_state.tickers
+    tickers = list(weights)
     holdings = st.session_state.holdings
     cash = st.session_state.cash
     total_value = st.session_state.stock_value + cash
     invested_share = st.session_state.stock_value / total_value if total_value > 0 else 1.0
-    weights_with_cash = {t: w * invested_share for t, w in weights.items()}
-    if invested_share < 1:
-        weights_with_cash["CASH"] = 1 - invested_share
 
-    advice = tips.build_tips(weights, returns, invested_share)
+    returns_3y = history.window(returns, GRADE_YEARS)
+    advice = tips.build_tips(weights, returns_3y, invested_share)
     facts = advice["facts"]
+    weights_with_cash = dict(facts["total_weights"])
+    if facts["cash_share"] > 0:
+        weights_with_cash["CASH"] = facts["cash_share"]
+    grade_daily = history.portfolio_daily(weights, returns_3y[tickers])
 
     with st.container(border=True):
         g, v = st.columns([1, 5])
@@ -201,12 +246,17 @@ else:
             f"**{facts['holdings']} holdings** · acting like **{facts['true_bets']:.1f} real bets** · "
             f"biggest: **{facts['biggest']} ({facts['biggest_pct']:.0f}% of your money)**"
         )
-        v.caption("Real bets = how many genuinely separate bets your holdings add up to, once the ones that move together are counted as one. Grades run A to F, and are discounted if most of your money is sitting in cash.")
+        v.caption("Real bets = how many genuinely separate bets your money is making. Holdings that move together count as one; a broad fund counts as several, because it holds many companies. Grades run A to F, and are discounted if most of your money is sitting in cash.")
+    grade_note = late_start_note(returns_3y, tickers, grade_daily, history.window_start(returns, GRADE_YEARS), "so the grade only covers that stretch")
+    if grade_note:
+        st.caption(f"Based on prices from {history.date_range_text(grade_daily)}{grade_note}.")
+    else:
+        st.caption(f"Based on the last {GRADE_YEARS} years of prices ({history.date_range_text(grade_daily)}).")
 
     st.divider()
     st.subheader("Your best moves")
-    st.caption("One trade each, ranked by how much it would have improved this mix over the last 3 years.")
-    swaps = cached_swaps(tuple(sorted(holdings.items())), cash, PERIOD)
+    st.caption(f"One trade each, ranked by how much it would have improved this mix over the last {GRADE_YEARS} years. They show what would change the grade — they are not advice to buy or sell.")
+    swaps = cached_swaps(tuple(sorted(holdings.items())), cash, GRADE_YEARS)
     for swap in swaps:
         with st.container(border=True):
             st.markdown(f"**{swap['text']}**")
@@ -216,7 +266,7 @@ else:
         st.info("We couldn't find a single swap that clearly improves this mix — that's a good sign.")
     elif not swaps:
         st.info("No single swap would clearly improve this mix. The notes below explain what is holding the grade down.")
-    st.caption("Typical yearly swing = how much a normal year moves this mix up or down. Worst drop = the biggest fall from a high point before it recovered. Share counts use today's prices and are rounded. Educational only — not financial advice.")
+    st.caption("Typical yearly swing = how much a normal year moves this mix up or down. Worst drop = the biggest fall from a high point before it recovered. A steadier mix usually earns a bit less per year — that trade-off is the point. Share counts use today's prices and are rounded.")
 
     st.divider()
     st.subheader("What's behind that")
@@ -247,9 +297,12 @@ else:
             else:
                 bench_label, bench_weights, bench_returns = custom, {custom: 1.0}, engine.compute_returns(custom_prices)
     bench_name = bench_label.split(" (")[0]
+    growth_choice = st.radio("Time window", list(GROWTH_WINDOWS), index=1, horizontal=True, label_visibility="collapsed", key="growth_years")
+    growth_years = GROWTH_WINDOWS[growth_choice]
+    returns_growth = history.window(returns, growth_years)
 
-    your_daily = history.portfolio_daily(weights, returns[tickers])
-    bench_daily = engine.portfolio_returns(bench_weights, bench_returns).dropna()
+    your_daily = history.portfolio_daily(weights, returns_growth[tickers])
+    bench_daily = history.portfolio_daily(bench_weights, history.window(bench_returns, growth_years))
     both = pd.concat([your_daily.rename("You"), bench_daily.rename(bench_name)], axis=1, join="inner")
     if both.empty:
         st.warning(f"You and {bench_name} don't share enough price history to compare.")
@@ -259,35 +312,34 @@ else:
         st.markdown(f"Total return since {both.index[0]:%b %Y}: you **{signed_pct(yours['total_return'])}** · {bench_name} **{signed_pct(bench['total_return'])}**")
         st.markdown(f"Worst drop along the way: you **{pct(yours['max_drawdown'])}** · {bench_name} **{pct(bench['max_drawdown'])}**")
         st.markdown(f"Typical yearly swing: you **{pct(yours['volatility'])}** · {bench_name} **{pct(bench['volatility'])}**")
-        st.caption("The worst drop is how far your money fell from its highest point before recovering — the number that makes people panic-sell.")
         st.altair_chart(compare_chart(both.apply(history.drawdown_series), "area", "How far below its previous high", "%", 220, zero=True), use_container_width=True)
-        st.caption("Every dip is a stretch where your money sat below its previous high. Deeper and longer means more painful.")
+        st.caption("Every dip is a stretch where your money sat below its previous high — the stretches that make people panic-sell. Deeper and longer means more painful.")
+        st.caption(f"Showing {history.date_range_text(both)}{late_start_note(returns_growth, tickers, both, history.window_start(returns, growth_years), extra={bench_name: bench_daily.index[0]})}.")
 
     st.divider()
     st.subheader("How it would have held up in past crashes")
     st.caption("What this exact mix would have done, compared with the S&P 500.")
-    crash_prices = cached_download(list(dict.fromkeys(tickers + ["SPY"])), "max")
-    crash_returns = engine.compute_returns(crash_prices)
     crashes = [
-        ("2022 bear market", "2022-01-03", "2022-10-13"),
+        ("2022 downturn", "2022-01-03", "2022-10-13"),
         ("COVID crash, 2020", "2020-02-19", "2020-03-23"),
-        ("Late-2018 selloff", "2018-10-01", "2018-12-24"),
+        ("Late-2018 drop", "2018-10-01", "2018-12-24"),
     ]
     worse_count = 0
     compared = 0
     cols = st.columns(3, gap="medium")
     for col, (name, start, end) in zip(cols, crashes):
-        yours = engine.crash_test(weights, crash_returns[tickers], start, end)
-        spy = engine.crash_test({"SPY": 1.0}, crash_returns[["SPY"]], start, end)
+        yours = engine.crash_test(weights, returns[tickers], start, end)
+        spy = engine.crash_test({"SPY": 1.0}, returns[["SPY"]], start, end)
         with col:
             with st.container(border=True):
                 st.markdown(f"**{name}**")
+                st.caption(history.short_range_text(start, end))
                 if yours is None:
                     st.caption("Not enough history — one of your holdings didn't exist yet.")
                 else:
-                    st.markdown(f"You: **{yours['total_return']*100:.0f}%**")
+                    st.markdown(f"You: **{pct(yours['total_return'])}**")
                     if spy is not None:
-                        st.markdown(f"S&P 500: **{spy['total_return']*100:.0f}%**")
+                        st.markdown(f"S&P 500: **{pct(spy['total_return'])}**")
                         compared += 1
                         if yours["total_return"] < spy["total_return"]:
                             worse_count += 1
@@ -304,12 +356,16 @@ else:
 
     st.divider()
     st.subheader("How steady it has been")
-    steady = engine.rolling_win_rate(weights, returns[tickers])
+    steady_choice = st.radio("Time window", list(STEADY_WINDOWS), horizontal=True, label_visibility="collapsed", key="steady_years")
+    steady_years = STEADY_WINDOWS[steady_choice]
+    returns_steady = history.window(returns, steady_years)
+    steady = engine.rolling_win_rate(weights, returns_steady[tickers])
+    steady_daily = history.portfolio_daily(weights, returns_steady[tickers])
     monthly = steady["monthly"]
     ups = int((monthly > 0).sum())
     total_months = len(monthly)
     st.markdown(f"#### {ups} of the last {total_months} months ended up")
-    st.caption("How many calendar months this mix gained value over the last 3 years. Around 6 in 10 is typical for the overall market.")
+    st.caption(f"How many calendar months this mix gained value over the last {steady_years} years. Around 6 in 10 is typical for the overall market.")
     monthly_df = monthly.reset_index()
     monthly_df.columns = ["Month", "Return"]
     monthly_df["Direction"] = monthly_df["Return"].apply(lambda r: "Up" if r >= 0 else "Down")
@@ -320,9 +376,11 @@ else:
         tooltip=[alt.Tooltip("Month:T", title="Month", format="%b %Y"), alt.Tooltip("Return:Q", title="Change", format=".1%")]
     ).properties(height=240)
     st.altair_chart(chart, use_container_width=True)
+    st.caption(f"Showing {history.date_range_text(steady_daily)}{late_start_note(returns_steady, tickers, steady_daily, history.window_start(returns, steady_years))}.")
 
     st.divider()
     st.subheader("Where your money really is")
+    st.caption("As of today's prices.")
     left, right = st.columns(2)
     with left:
         st.write("**By type of investment**")
@@ -338,10 +396,10 @@ else:
     with left:
         st.write("**By holding** — share of everything you own, including cash")
         for t, w in sorted(facts["total_weights"].items(), key=lambda kv: -kv[1]):
-            st.write(f"{t} — {w*100:.0f}%")
+            st.write(f"{t} — {pct(w)}")
             st.progress(min(1.0, max(0.0, w)))
         if facts["cash_share"] > 0:
-            st.write(f"Cash — {facts['cash_share']*100:.0f}%")
+            st.write(f"Cash — {pct(facts['cash_share'])}")
             st.progress(min(1.0, max(0.0, facts["cash_share"])))
     with right:
         st.write("**By industry** — share of your invested money, with the S&P 500 for comparison")
@@ -352,7 +410,7 @@ else:
         else:
             st.info("None of your holdings are individual stocks or stock funds, so there's no industry split to show.")
         if facts["non_eq"] > 0.005:
-            st.caption(f"Bonds, gold, or other non-stock funds: {facts['non_eq']*100:.0f}% of your invested money.")
+            st.caption(f"Bonds, gold, or other non-stock funds: {pct(facts['non_eq'])} of your invested money.")
 
     st.divider()
     with st.expander("Learn the ideas — a 5-minute read"):
