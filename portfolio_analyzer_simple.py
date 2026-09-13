@@ -28,6 +28,7 @@ BENCHMARK_TICKERS = sorted({t for mix in BENCHMARKS.values() for t in mix})
 DEFAULT_BENCHMARK = next(iter(BENCHMARKS))
 CUSTOM_OPTION = "Another ticker…"
 YOU_COLOR = "#2a78d6"
+AFTER_COLOR = "#1baf7a"
 BENCH_COLOR = "#898781"
 SLICE_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7"]
 ASSET_COLORS = {"Stocks": "#2a78d6", "Bonds": "#1baf7a", "Gold": "#eda100", "Cash": "#008300"}
@@ -90,14 +91,14 @@ def before_after(swap):
     ])
 
 
-def compare_chart(wide, kind, y_title, y_format, height, zero):
+def compare_chart(wide, kind, y_title, y_format, height, zero, colors=None):
     names = list(wide.columns)
     long = wide.rename_axis("Date").reset_index().melt("Date", var_name="Series", value_name="Value")
     hover = alt.selection_point(fields=["Date"], nearest=True, on="mouseover", empty=False)
     base = alt.Chart(long).encode(
         x=alt.X("Date:T", title=None),
         y=alt.Y("Value:Q", title=y_title, axis=alt.Axis(format=y_format), scale=alt.Scale(zero=zero)),
-        color=alt.Color("Series:N", scale=alt.Scale(domain=names, range=[YOU_COLOR, BENCH_COLOR]), legend=alt.Legend(title=None, orient="top")),
+        color=alt.Color("Series:N", scale=alt.Scale(domain=names, range=colors or [YOU_COLOR, BENCH_COLOR]), legend=alt.Legend(title=None, orient="top")),
     )
     body = base.mark_area(fillOpacity=0.35, line=True) if kind == "area" else base.mark_line(strokeWidth=2)
     dots = base.mark_point(size=50, filled=True).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)))
@@ -225,6 +226,7 @@ else:
     returns = st.session_state.returns
     tickers = list(weights)
     holdings = st.session_state.holdings
+    prices = st.session_state.prices
     cash = st.session_state.cash
     total_value = st.session_state.stock_value + cash
     invested_share = st.session_state.stock_value / total_value if total_value > 0 else 1.0
@@ -312,9 +314,26 @@ else:
         st.markdown(f"Total return since {both.index[0]:%b %Y}: you **{signed_pct(yours['total_return'])}** · {bench_name} **{signed_pct(bench['total_return'])}**")
         st.markdown(f"Worst drop along the way: you **{pct(yours['max_drawdown'])}** · {bench_name} **{pct(bench['max_drawdown'])}**")
         st.markdown(f"Typical yearly swing: you **{pct(yours['volatility'])}** · {bench_name} **{pct(bench['volatility'])}**")
-        st.altair_chart(compare_chart(both.apply(history.drawdown_series), "area", "How far below its previous high", "%", 220, zero=True), use_container_width=True)
-        st.caption("Every dip is a stretch where your money sat below its previous high — the stretches that make people panic-sell. Deeper and longer means more painful.")
         st.caption(f"Showing {history.date_range_text(both)}{late_start_note(returns_growth, tickers, both, history.window_start(returns, growth_years), extra={bench_name: bench_daily.index[0]})}.")
+
+        if swaps:
+            st.markdown("**What if you made one of the moves above?**")
+            move = st.selectbox("Move to try", [s["text"] for s in swaps], label_visibility="collapsed", key="whatif_move")
+            swap = next(s for s in swaps if s["text"] == move)
+            after_holdings = dict(holdings)
+            after_holdings[swap["sell_ticker"]] = after_holdings[swap["sell_ticker"]] - swap["sell_shares"]
+            if after_holdings[swap["sell_ticker"]] <= 0:
+                del after_holdings[swap["sell_ticker"]]
+            after_holdings[swap["buy_ticker"]] = after_holdings.get(swap["buy_ticker"], 0) + swap["buy_shares"]
+            after_weights, _ = holdings_to_weights(after_holdings, prices)
+            after_daily = history.portfolio_daily(after_weights, returns_growth[list(after_weights)])
+            trio = pd.concat([your_daily.rename("You now"), after_daily.rename("After the move"), bench_daily.rename(bench_name)], axis=1, join="inner")
+            st.altair_chart(compare_chart(trio.apply(history.growth_of), "line", "Value of $10,000", "$,.0f", 300, zero=False, colors=[YOU_COLOR, AFTER_COLOR, BENCH_COLOR]), use_container_width=True)
+            now, after = history.summary(trio["You now"]), history.summary(trio["After the move"])
+            st.markdown(f"Total return since {trio.index[0]:%b %Y}: now **{signed_pct(now['total_return'])}** · after the move **{signed_pct(after['total_return'])}**")
+            st.markdown(f"Worst drop along the way: now **{pct(now['max_drawdown'])}** · after the move **{pct(after['max_drawdown'])}**")
+            st.markdown(f"Typical yearly swing: now **{pct(now['volatility'])}** · after the move **{pct(after['volatility'])}**")
+            st.caption("Past prices, not a prediction — this is how the new mix would have behaved over the same stretch, with the shares you'd hold after the move.")
 
     st.divider()
     st.subheader("How it would have held up in past crashes")
