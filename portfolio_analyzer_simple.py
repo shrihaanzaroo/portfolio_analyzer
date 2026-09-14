@@ -3,6 +3,7 @@ import altair as alt
 import streamlit as st
 import brokerage_csv
 import engine
+import funds
 import history
 import optimizer
 import regions
@@ -61,6 +62,11 @@ def cached_swaps(holdings_items, cash, years):
     prices = cached_download(download_list(list(holdings)), PERIOD)
     returns = history.window(engine.compute_returns(prices), years)
     return optimizer.suggest_swaps(holdings, prices, returns, cash, k=3)
+
+
+@st.cache_data(show_spinner="Looking inside your funds...")
+def cached_funds(tickers):
+    return funds.register(list(tickers))
 
 
 def pct(x):
@@ -203,6 +209,9 @@ if st.sidebar.button("Analyze", type="primary", use_container_width=True):
         st.stop()
 
     tickers = list(holdings.keys())
+    fund_info = cached_funds(tuple(tickers))
+    funds.apply(fund_info)
+    st.session_state.fund_info = fund_info
     prices = cached_download(download_list(tickers), PERIOD)
     recent = history.window(prices, GRADE_YEARS)
 
@@ -261,6 +270,8 @@ else:
         st.caption(f"Based on prices from {history.date_range_text(grade_daily)}{grade_note}.")
     else:
         st.caption(f"Based on the last {GRADE_YEARS} years of prices ({history.date_range_text(grade_daily)}).")
+    if st.session_state.get("fund_info"):
+        st.caption("Looked inside your funds: " + "; ".join(funds.describe(t, e) for t, e in st.session_state.fund_info.items()) + ".")
 
     st.divider()
     st.subheader("Your best moves")

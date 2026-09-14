@@ -18,7 +18,7 @@ def country_lookup(ticker):
     if ticker == "CASH":
         return {"Cash": 100}
     if ticker in ref.FUND_SPEC:
-        return {"United States": 100}
+        return dict(ref.FUND_SPEC[ticker].get("countries") or {"United States": 100})
     return {COUNTRY_OVERRIDES.get(ticker, "United States"): 100}
 
 
@@ -35,7 +35,7 @@ def country_mix(weights):
     other = raw.get("Other", 0) + sum(p for _, p in named[6:])
     if other > 0:
         top["Other countries"] = other
-    rows = [{"country": c, "pct": p} for c, p in top.items() if p > 0]
+    rows = [{"country": c, "pct": p} for c, p in top.items() if p >= 0.5]
     return sorted(rows, key=lambda r: r["pct"], reverse=True)
 
 
@@ -52,7 +52,12 @@ def asset_mix(weights):
         return []
     raw = {}
     for ticker, w in weights.items():
-        cls = asset_class(ticker)
-        raw[cls] = raw.get(cls, 0) + 100 * w / total
-    rows = [{"asset": a, "pct": p} for a, p in raw.items() if p > 0]
+        split = ref.FUND_SPEC.get(ticker, {}).get("assets") or {}
+        if sum(split.values()) > 0:
+            for cls, share in split.items():
+                raw[cls] = raw.get(cls, 0) + 100 * w / total * share / sum(split.values())
+        else:
+            cls = asset_class(ticker)
+            raw[cls] = raw.get(cls, 0) + 100 * w / total
+    rows = [{"asset": a, "pct": p} for a, p in raw.items() if p >= 0.5]
     return sorted(rows, key=lambda r: r["pct"], reverse=True)

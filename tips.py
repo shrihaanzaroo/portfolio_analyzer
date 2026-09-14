@@ -221,6 +221,8 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
         # one stock can't score above D no matter how calm it has been
         grade = max(grade, "D")
         verdict = f"Everything is riding on one company. Whatever happens to {biggest} happens to you."
+    elif grade in ("A", "B") and n >= 3 and true_bets < FEW_BETS_RATIO * n:
+        verdict = "Spread out on paper — but your holdings overlap, so it's fewer separate bets than it looks."
     elif grade in ("A", "B"):
         verdict = "Looking solid — your holdings are genuinely spread out."
     elif grade == "C":
