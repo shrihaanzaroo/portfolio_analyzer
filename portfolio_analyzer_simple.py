@@ -37,7 +37,7 @@ SLICE_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"
 ASSET_COLORS = {"Stocks": "#2a78d6", "Bonds": "#1baf7a", "Gold": "#eda100", "Cash": "#008300"}
 
 METHOD = [
-    ("Data.", "Daily closing prices from Yahoo Finance, adjusted for splits and dividends. The grade, the notes and the scenarios use the last 3 years; each chart says which dates it shows."),
+    ("Data.", "Daily closing prices from Yahoo Finance, adjusted for splits and dividends. The grade, the notes and the scenarios use the last 3 years; each chart says which dates it shows. When a chart reaches back before one of your holdings existed, that holding's share is spread across the others for that stretch, as long as the holdings that did exist make up at least half your money; the chart says so when it happens."),
     ("How spread out.", "Your money is converted to weights at today's prices. Concentration uses the Herfindahl index, a standard measure: square each weight and add them up; one divided by that total is the number of equal-sized holdings your mix behaves like."),
     ("Funds.", "ETFs and mutual funds are looked up on Yahoo Finance and looked inside: their largest holdings, industry split and stock/bond/cash split. The rest of a fund is spread across an estimated number of companies for its category (about 50 for an S&P 500 fund, 60 for a total-market fund), not its exact holdings list. If the lookup fails, a built-in table of common index funds is used."),
     ("Moving together.", "Correlation of daily returns between each pair of holdings — a standard statistic from -1 to 1. Holdings that barely move (such as cash-like funds) are left out."),
@@ -98,6 +98,21 @@ def late_start_note(frame, tickers, daily, requested_start, then="so the chart s
     if culprit is None:
         return ""
     return f" — {culprit} didn't exist before then, {then}"
+
+
+def window_note(frame, tickers, shown, requested_start, bench=None):
+    notes = []
+    start = shown.index[0]
+    if start > requested_start + pd.Timedelta(days=30):
+        if bench and bench[1] >= start - pd.Timedelta(days=5):
+            notes.append(f"{bench[0]} didn't exist before then, so the chart starts there")
+        else:
+            notes.append("most of your money is in holdings that didn't exist before then, so the chart starts there")
+    late = [t for t in tickers if frame[t].first_valid_index() is None or frame[t].first_valid_index() > start + pd.Timedelta(days=30)]
+    if late:
+        names = " and ".join(late) if len(late) <= 2 else ", ".join(late[:-1]) + " and " + late[-1]
+        notes.append(f"before {names} existed, {'its' if len(late) == 1 else 'their'} share is spread across your other holdings")
+    return " — " + "; ".join(notes) if notes else ""
 
 
 SCENARIO_STATS = [
@@ -355,7 +370,7 @@ else:
     growth_years = GROWTH_WINDOWS[growth_choice]
     returns_growth = history.window(returns, growth_years)
 
-    your_daily = history.portfolio_daily(weights, returns_growth[tickers])
+    your_daily = history.filled_daily(weights, returns_growth)
     bench_daily = history.portfolio_daily(bench_weights, history.window(bench_returns, growth_years))
     both = pd.concat([your_daily.rename("You"), bench_daily.rename(bench_name)], axis=1, join="inner")
     if both.empty:
@@ -366,7 +381,7 @@ else:
         st.markdown(f"Total return since {both.index[0]:%b %Y}: you **{signed_pct(yours['total_return'])}** · {bench_name} **{signed_pct(bench['total_return'])}**")
         st.markdown(f"Worst drop along the way: you **{pct(yours['max_drawdown'])}** · {bench_name} **{pct(bench['max_drawdown'])}**")
         st.markdown(f"Typical yearly swing: you **{pct(yours['volatility'])}** · {bench_name} **{pct(bench['volatility'])}**")
-        st.caption(f"Showing {history.date_range_text(both)}{late_start_note(returns_growth, tickers, both, history.window_start(returns, growth_years), extra={bench_name: bench_daily.index[0]})}.")
+        st.caption(f"Showing {history.date_range_text(both)}{window_note(returns_growth, tickers, both, history.window_start(returns, growth_years), bench=(bench_name, bench_daily.index[0]))}.")
 
         if swaps:
             st.markdown("**See a scenario play out**")
@@ -378,7 +393,7 @@ else:
                 del after_holdings[swap["sell_ticker"]]
             after_holdings[swap["buy_ticker"]] = after_holdings.get(swap["buy_ticker"], 0) + swap["buy_shares"]
             after_weights, _ = holdings_to_weights(after_holdings, prices)
-            after_daily = history.portfolio_daily(after_weights, returns_growth[list(after_weights)])
+            after_daily = history.filled_daily(after_weights, returns_growth)
             trio = pd.concat([your_daily.rename("You now"), after_daily.rename("In the scenario"), bench_daily.rename(bench_name)], axis=1, join="inner")
             st.altair_chart(compare_chart(trio.apply(history.growth_of), "line", "Value of $10,000", "$,.0f", 300, zero=False, colors=[YOU_COLOR, AFTER_COLOR, BENCH_COLOR]), use_container_width=True)
             now, after = history.summary(trio["You now"]), history.summary(trio["In the scenario"])
@@ -398,9 +413,12 @@ else:
     worse_count = 0
     compared = 0
     crash_rows = []
+    all_daily = history.filled_daily(weights, returns)
     cols = st.columns(3, gap="medium")
     for col, (name, start, end) in zip(cols, crashes):
-        yours = engine.crash_test(weights, returns[tickers], start, end)
+        window = all_daily.loc[start:end]
+        yours = {"total_return": history.total_return(window)} if len(window) and all_daily.index[0] <= pd.Timestamp(start) else None
+        absent = [t for t in tickers if returns[t].first_valid_index() is None or returns[t].first_valid_index() > pd.Timestamp(start)]
         spy = engine.crash_test({"SPY": 1.0}, returns[["SPY"]], start, end)
         crash_rows.append({
             "name": name, "dates": history.short_range_text(start, end),
@@ -412,7 +430,7 @@ else:
                 st.markdown(f"**{name}**")
                 st.caption(history.short_range_text(start, end))
                 if yours is None:
-                    st.caption("Not enough history — one of your holdings didn't exist yet.")
+                    st.caption("Not enough history — most of your money is in holdings that didn't exist yet.")
                 else:
                     st.markdown(f"You: **{pct(yours['total_return'])}**")
                     if spy is not None:
@@ -423,6 +441,8 @@ else:
                             st.caption("Fell harder than the market")
                         else:
                             st.caption("Held up better than the market")
+                    if absent:
+                        st.caption(f"Without {', '.join(absent)}, which didn't exist yet.")
     if compared:
         if worse_count == 0:
             st.success(f"This mix would have dropped **less** than the market in every crash we could check ({compared} of {compared}).")
@@ -436,13 +456,12 @@ else:
     steady_choice = st.radio("Time window", list(STEADY_WINDOWS), horizontal=True, label_visibility="collapsed", key="steady_years")
     steady_years = STEADY_WINDOWS[steady_choice]
     returns_steady = history.window(returns, steady_years)
-    steady = engine.rolling_win_rate(weights, returns_steady[tickers])
-    steady_daily = history.portfolio_daily(weights, returns_steady[tickers])
-    monthly = steady["monthly"]
+    steady_daily = history.filled_daily(weights, returns_steady)
+    monthly = history.monthly_returns(steady_daily)
     ups = int((monthly > 0).sum())
     total_months = len(monthly)
     st.markdown(f"#### {ups} of the last {total_months} months ended positive")
-    st.caption(f"How many calendar months this mix gained value over the last {steady_years} years. Around 6 in 10 is typical for the overall market.")
+    st.caption("How many calendar months this mix gained value. Around 6 in 10 is typical for the overall market.")
     monthly_df = monthly.reset_index()
     monthly_df.columns = ["Month", "Return"]
     monthly_df["Direction"] = monthly_df["Return"].apply(lambda r: "Up" if r >= 0 else "Down")
@@ -453,7 +472,7 @@ else:
         tooltip=[alt.Tooltip("Month:T", title="Month", format="%b %Y"), alt.Tooltip("Return:Q", title="Change", format=".1%")]
     ).properties(height=240)
     st.altair_chart(chart, use_container_width=True)
-    st.caption(f"Showing {history.date_range_text(steady_daily)}{late_start_note(returns_steady, tickers, steady_daily, history.window_start(returns, steady_years))}.")
+    st.caption(f"Showing {history.date_range_text(steady_daily)}{window_note(returns_steady, tickers, steady_daily, history.window_start(returns, steady_years))}.")
 
     st.divider()
     st.subheader("Where your money really is")
@@ -518,7 +537,7 @@ else:
     spy_daily = history.portfolio_daily({"SPY": 1.0}, returns_3y[["SPY"]])
     pair = pd.concat([grade_daily.rename("you"), spy_daily.rename("spy")], axis=1, join="inner")
     mine, market = history.summary(pair["you"]), history.summary(pair["spy"])
-    steady_3y = engine.rolling_win_rate(weights, returns_3y[tickers])["monthly"]
+    steady_3y = history.monthly_returns(history.filled_daily(weights, returns_3y))
     report_slot.download_button(
         "Download this check-up as a report",
         report.build_html({

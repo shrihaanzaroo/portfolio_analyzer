@@ -7,6 +7,20 @@ def portfolio_daily(weights, returns):
     return engine.portfolio_returns(weights, returns).dropna()
 
 
+def filled_daily(weights, returns, min_coverage=0.5):
+    """Daily return using whichever holdings had prices that day, their weights scaled up to fill the gap.
+    Days are kept only while the holdings that existed make up at least min_coverage of the money."""
+    frame = returns[list(weights)]
+    w = pd.Series(weights)
+    covered = frame.notna().mul(w, axis=1).sum(axis=1)
+    daily = frame.fillna(0).mul(w, axis=1).sum(axis=1) / covered.where(covered > 0)
+    return daily[covered >= min_coverage].dropna()
+
+
+def monthly_returns(daily):
+    return (1 + daily).resample("ME").prod() - 1
+
+
 def cumulative_returns(daily):
     return (1 + daily.dropna()).cumprod() - 1
 
