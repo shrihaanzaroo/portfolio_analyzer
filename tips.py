@@ -1,5 +1,6 @@
 import engine
 import reference_data as ref
+import scorecard
 
 BIG_POSITION = 0.30
 SECTOR_HEAVY = 50
@@ -21,10 +22,6 @@ def sector_examples(max_per_sector=3):
         if len(bucket) < max_per_sector:
             bucket.append(ticker)
     return examples
-
-
-def is_fund(ticker):
-    return ref.spec_lookup(ticker)["br"] > 1
 
 
 def pct(x):
@@ -67,7 +64,7 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
     sec = engine.sector_concentration(weights)
     port_vol = engine.portfolio_vol(weights, returns[tickers])
     spy_vol = engine.ann_vol(returns["SPY"])
-    card = engine.report_card(weights, returns, invested_share)
+    card = scorecard.grade(weights, returns, invested_share)
     redundant = sorted(engine.redundant_pairs(weights, returns, redundant_cutoff), key=lambda p: -p[2])
     overlaps = sorted(engine.look_through_overlap_pairs(weights), key=lambda p: -p[3])
     if n >= 2:
@@ -79,7 +76,7 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
     cash_share = 1 - invested_share
     biggest, biggest_w = max(total_weights.items(), key=lambda kv: kv[1])
     vol_ratio = port_vol / spy_vol if spy_vol > 0 else None
-    true_bets = tb["true_bets"]
+    true_bets = scorecard.real_bets(weights, returns)
     avg_corr = tb["avg_corr"]
     examples = sector_examples()
     user_sectors = {row["sector"] for row in sec["sectors"]}
@@ -88,7 +85,7 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
     tips = []
 
     if biggest_w > BIG_POSITION:
-        if is_fund(biggest):
+        if scorecard.is_fund(biggest):
             tips.append({
                 "level": "good",
                 "title": f"{biggest} is your biggest holding ({pct(biggest_w)}), and that's fine",
@@ -127,7 +124,7 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
             "level": "medium",
             "title": f"{join_names(names)} move together — they act like one bet",
             "why": f"When one of them has a bad day the others usually do too (their moves match about {c['corr'] * 100:.0f}% of the time). Together they are {pct(c['money'])} of your money, so this is really one big bet, not {COUNT_WORDS.get(len(names), str(len(names)))}.",
-            "action": "Treat them as one position when deciding how much to invest. To turn them into real separate bets, keep the one you believe in most and move the rest into something that moves differently — the moves at the top of the page (“Your best moves”) show exactly how.",
+            "action": "Treat them as one position when deciding how much to invest. To turn them into real separate bets, keep the one you believe in most and move the rest into something that moves differently — the what-if scenarios further down show how that would have changed things.",
         })
 
     if overlaps and overlaps[0][2] >= 0.01:
@@ -211,15 +208,33 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
             "action": "Nice. Keep an eye on this as you add holdings.",
         })
 
+    kind, kind_share = scorecard.largest_type(weights)
+    abroad = scorecard.abroad_share(weights)
+    if kind_share > 0.97 and (n == 1 or hedges):
+        tips.append({
+            "level": "medium",
+            "title": f"Everything you've invested is in {kind.lower()}",
+            "why": f"{kind} tend to fall together in a bad year, however many of them you own. Other types of investment — bonds, gold, cash — often hold up when they do.",
+            "action": "A bond fund like BND, or some gold (GLD), is the classic cushion. Even 10–15% changes how a bad year feels.",
+        })
+    if abroad is not None and abroad < 0.05:
+        tips.append({
+            "level": "medium",
+            "title": "Almost all of your money is in one country",
+            "why": "U.S. companies have done very well lately, but no single country leads forever. Money abroad is a bet that doesn't depend on one economy.",
+            "action": "An international fund like VXUS or EFA adds thousands of companies outside the U.S. in one holding.",
+        })
+
     tips.sort(key=lambda t: LEVEL_ORDER[t["level"]])
     # the page is about what to fix, so one "already working" note is enough
     good = [t for t in tips if t["level"] == "good"][:1]
     tips = ([t for t in tips if t["level"] != "good"] + good)[:MAX_TIPS]
 
     grade = card["overall"]
-    if n == 1:
-        # one stock can't score above D no matter how calm it has been
-        grade = max(grade, "D")
+    where = "" if abroad is None or abroad >= 0.05 else "U.S. "
+    if n == 1 and scorecard.is_fund(biggest):
+        verdict = f"You hold one fund, but it is a broad one — spread across many companies, yet all in one kind of risk: {where}{kind.lower()}."
+    elif n == 1:
         verdict = f"Everything is riding on one company. Whatever happens to {biggest} happens to you."
     elif grade in ("A", "B") and n >= 3 and true_bets < FEW_BETS_RATIO * n:
         verdict = "Spread out on paper — but your holdings overlap, so it's fewer separate bets than it looks."
@@ -232,7 +247,7 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
 
     return {
         "grade": grade,
-        "grades": card["grades"],
+        "dimensions": card["dimensions"],
         "verdict": verdict,
         "tips": tips,
         "facts": {

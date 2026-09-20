@@ -40,6 +40,24 @@ BREADTH_BY_CATEGORY = [
     ("precious", 1), ("commodit", 1),
 ]
 DEFAULT_BREADTH = 40
+# used only when Yahoo Finance can't be reached, so a common index fund is never mistaken for one stock
+COMMON_FUNDS = {
+    "FSKAX": ("Fidelity Total Market Index", "Total Market"), "VTSAX": ("Vanguard Total Stock Market Index", "Total Market"),
+    "SWTSX": ("Schwab Total Stock Market Index", "Total Market"), "ITOT": ("iShares Core S&P Total U.S. Stock Market", "Total Market"),
+    "SCHB": ("Schwab U.S. Broad Market", "Total Market"),
+    "FXAIX": ("Fidelity 500 Index", "Large Blend"), "VFIAX": ("Vanguard 500 Index", "Large Blend"),
+    "SWPPX": ("Schwab S&P 500 Index", "Large Blend"), "IVV": ("iShares Core S&P 500", "Large Blend"),
+    "SCHX": ("Schwab U.S. Large-Cap", "Large Blend"),
+    "QQQM": ("Invesco Nasdaq 100", "Large Growth"), "VUG": ("Vanguard Growth", "Large Growth"), "SCHG": ("Schwab U.S. Large-Cap Growth", "Large Growth"),
+    "VTV": ("Vanguard Value", "Large Value"), "SCHD": ("Schwab U.S. Dividend Equity", "Large Value"),
+    "VXUS": ("Vanguard Total International Stock", "Foreign Large Blend"), "VTIAX": ("Vanguard Total International Stock Index", "Foreign Large Blend"),
+    "FTIHX": ("Fidelity Total International Index", "Foreign Large Blend"), "IXUS": ("iShares Core MSCI Total International", "Foreign Large Blend"),
+    "VEA": ("Vanguard Developed Markets", "Foreign Large Blend"), "IEMG": ("iShares Core MSCI Emerging Markets", "Diversified Emerging Mkts"),
+    "VT": ("Vanguard Total World Stock", "World Stock"),
+    "FXNAX": ("Fidelity U.S. Bond Index", "Intermediate Core Bond"), "VBTLX": ("Vanguard Total Bond Market Index", "Intermediate Core Bond"),
+    "BNDX": ("Vanguard Total International Bond", "Global Bond"), "SCHZ": ("Schwab U.S. Aggregate Bond", "Intermediate Core Bond"),
+    "IAU": ("iShares Gold Trust", "Commodities Focused Gold"),
+}
 STOCK_TICKER = re.compile(r"^[A-Z][A-Z.\-]{0,5}$")
 
 _cache = {}
@@ -71,14 +89,39 @@ def looks_like_stock(symbol):
     return not (len(s) == 5 and s.endswith("X"))
 
 
+def from_table(ticker):
+    name, category = COMMON_FUNDS[ticker]
+    cat = category.lower()
+    if "bond" in cat:
+        entry = {"sector": "Bonds", "br": breadth_for(category), "assets": {"Stocks": 0, "Bonds": 100, "Cash": 0}}
+    elif "gold" in cat:
+        entry = {"sector": "Gold", "br": 1}
+    else:
+        entry = {"sector": "Index", "br": breadth_for(category), "assets": {"Stocks": 100, "Bonds": 0, "Cash": 0}}
+        if "foreign" in cat or "emerging" in cat:
+            entry["mix"] = dict(ref.FUND_SPEC["VWO" if "emerging" in cat else "EFA"]["mix"])
+        else:
+            entry["mix"] = dict(ref.SP500)
+            if "growth" not in cat and "value" not in cat and "world" not in cat:
+                entry["top"] = dict(ref.VTI_TOP if "total" in cat else ref.SP_TOP)
+    entry.update({"name": name, "category": category})
+    countries = countries_for(category)
+    if countries:
+        entry["countries"] = countries
+    return entry
+
+
 def fetch(ticker):
+    """A fund's composition, False if Yahoo says it is not a fund, None if Yahoo could not be reached."""
     try:
         tk = yf.Ticker(ticker)
         info = tk.info or {}
     except Exception:
         return None
-    if info.get("quoteType") not in ("ETF", "MUTUALFUND"):
+    if not info.get("quoteType"):
         return None
+    if info.get("quoteType") not in ("ETF", "MUTUALFUND"):
+        return False
 
     def grab(attr):
         try:
@@ -136,10 +179,16 @@ def register(tickers):
             found[t] = ref.FUND_SPEC[t]
             continue
         if t not in _cache:
-            _cache[t] = fetch(t)
-        if _cache[t]:
-            ref.FUND_SPEC[t] = _cache[t]
-            found[t] = _cache[t]
+            entry = fetch(t)
+            if entry is None:
+                entry = from_table(t) if t in COMMON_FUNDS else None
+            else:
+                _cache[t] = entry
+        else:
+            entry = _cache[t]
+        if entry:
+            ref.FUND_SPEC[t] = entry
+            found[t] = entry
     return found
 
 
@@ -156,5 +205,5 @@ def describe(ticker, entry):
         parts.append(f", {entry['category']}")
     breadth = entry.get("br", 1)
     if breadth > 1:
-        parts.append(f" (counted as about {breadth} separate companies)")
+        parts.append(f" (counted as about {breadth} separate holdings)")
     return "".join(parts)

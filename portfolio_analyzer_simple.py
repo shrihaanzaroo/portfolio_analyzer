@@ -7,12 +7,14 @@ import funds
 import history
 import optimizer
 import regions
+import report
 import tips
 
 st.set_page_config(page_title="Portfolio Check-Up", page_icon="🩺", layout="wide")
 cached_download = st.cache_data(show_spinner="Downloading price history...")(engine.download_prices)
 
 LEVEL_BOX = {"high": st.error, "medium": st.warning, "good": st.success}
+LEVEL_MARK = {"high": ":red[Needs attention]", "medium": ":orange[Worth knowing]", "good": ":green[Working]"}
 PERIOD = "max"
 GRADE_YEARS = 3
 GROWTH_WINDOWS = {"1 year": 1, "3 years": 3, "5 years": 5, "10 years": 10, "All history": None}
@@ -33,6 +35,18 @@ AFTER_COLOR = "#1baf7a"
 BENCH_COLOR = "#898781"
 SLICE_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7"]
 ASSET_COLORS = {"Stocks": "#2a78d6", "Bonds": "#1baf7a", "Gold": "#eda100", "Cash": "#008300"}
+
+METHOD = [
+    ("Data.", "Daily closing prices from Yahoo Finance, adjusted for splits and dividends. The grade, the notes and the scenarios use the last 3 years; each chart says which dates it shows."),
+    ("How spread out.", "Your money is converted to weights at today's prices. Concentration uses the Herfindahl index, a standard measure: square each weight and add them up; one divided by that total is the number of equal-sized holdings your mix behaves like."),
+    ("Funds.", "ETFs and mutual funds are looked up on Yahoo Finance and looked inside: their largest holdings, industry split and stock/bond/cash split. The rest of a fund is spread across an estimated number of companies for its category (about 50 for an S&P 500 fund, 60 for a total-market fund), not its exact holdings list. If the lookup fails, a built-in table of common index funds is used."),
+    ("Moving together.", "Correlation of daily returns between each pair of holdings — a standard statistic from -1 to 1. Holdings that barely move (such as cash-like funds) are left out."),
+    ("Real bets.", "This app's own estimate, not an industry standard: the equal-sized-holdings number divided by (1 + (that number - 1) x the average correlation). With no correlation it equals the number of holdings; as holdings move together it falls toward 1. Companies inside the same fund are assumed to move together with a correlation of 0.35, a typical long-run figure for large companies, because a fund's insides cannot be measured from its price."),
+    ("The grade.", "An average of seven checks, each scored 0 to 4: spread across companies, across industries, across countries, across types of investment, swings compared with the S&P 500, share of months that ended positive, and near-duplicate holdings. It is discounted when most of the money sits in cash. The cut-offs are judgment calls."),
+    ("Scenarios.", "About 100 hypothetical swaps are tried: half or all of each of your five largest holdings, into each of ten common diversifiers (bond, gold, broad-market, international, and steady-industry holdings). Each new mix is re-graded the same way over the same 3 years, and the three that change the most are shown."),
+    ("Tested on.", "Six large tech stocks grade C (about 2 real bets, one industry). An S&P 500 fund with bonds, gold and stocks from other industries grades B, and A once an international fund is added. A single stock is capped at D. A single total-market index fund grades B: many companies, but one country and one type of investment. Three overlapping U.S. stock funds grade B but count as about 1.3 real bets."),
+    ("Limits.", "Everything here looks backward: it describes how this mix behaved, not how it will. Three years is a short sample, and holdings tend to move together more in a crash than in calm years. Country and fund breadth figures are approximate. Taxes, fees and trading costs are ignored. This is an educational tool, not financial advice."),
+]
 
 
 def holdings_df_to_dict(df):
@@ -64,7 +78,7 @@ def cached_swaps(holdings_items, cash, years):
     return optimizer.suggest_swaps(holdings, prices, returns, cash, k=3)
 
 
-@st.cache_data(show_spinner="Looking inside your funds...")
+@st.cache_data(show_spinner="Looking inside your funds...", ttl=3600)
 def cached_funds(tickers):
     return funds.register(list(tickers))
 
@@ -86,7 +100,7 @@ def late_start_note(frame, tickers, daily, requested_start, then="so the chart s
     return f" — {culprit} didn't exist before then, {then}"
 
 
-MOVE_STATS = [
+SCENARIO_STATS = [
     ("Real bets", "true_bets", lambda x: f"{x:.1f}", True),
     ("Typical yearly swing", "volatility", pct, False),
     ("Worst drop", "max_drawdown", pct, True),
@@ -231,8 +245,8 @@ st.caption("A plain-English look at whether your investments are really spread o
 
 if st.session_state.weights is None:
     st.info(
-        "**What this does:** you tell it what you own, and it gives you a grade, the specific moves that would "
-        "improve it, how your money has grown compared with the market, and where it really is — by type, "
+        "**What this does:** you tell it what you own, and it gives you a grade, what is holding it back, "
+        "what-if scenarios that show what would change it, how your money has grown compared with the market, and where it really is — by type, "
         "by country, and by industry. "
         "Your holdings live in the **sidebar** (on a phone, tap the **›** arrow at the top-left to open it). "
         "The defaults there are just an example: edit them, then tap **Analyze**."
@@ -261,10 +275,10 @@ else:
         g.caption("Grade")
         v.markdown(f"#### {advice['verdict']}")
         v.markdown(
-            f"**{facts['holdings']} holdings** · acting like **{facts['true_bets']:.1f} real bets** · "
+            f"**{facts['holdings']} holding{'' if facts['holdings'] == 1 else 's'}** · acting like **{facts['true_bets']:.1f} real bets** · "
             f"biggest: **{facts['biggest']} ({facts['biggest_pct']:.0f}% of your money)**"
         )
-        v.caption("Real bets = how many genuinely separate bets your money is making. Holdings that move together count as one; a broad fund counts as several, because it holds many companies. Grades run A to F, and are discounted if most of your money is sitting in cash.")
+        v.caption("Grades run A to F. They reward being spread across companies, industries, countries and types of investment, and holdings that don't all move together.")
     grade_note = late_start_note(returns_3y, tickers, grade_daily, history.window_start(returns, GRADE_YEARS), "so the grade only covers that stretch")
     if grade_note:
         st.caption(f"Based on prices from {history.date_range_text(grade_daily)}{grade_note}.")
@@ -273,34 +287,49 @@ else:
     if st.session_state.get("fund_info"):
         st.caption("Looked inside your funds: " + "; ".join(funds.describe(t, e) for t, e in st.session_state.fund_info.items()) + ".")
 
-    st.divider()
-    st.subheader("Your best moves")
-    st.caption(f"One trade each, ranked by how much it would have improved this mix over the last {GRADE_YEARS} years. They show what would change the grade — they are not advice to buy or sell.")
-    swaps = cached_swaps(tuple(sorted(holdings.items())), cash, GRADE_YEARS)
-    for i, swap in enumerate(swaps, 1):
-        with st.container(border=True):
-            head, grade_col = st.columns([4, 1])
-            head.caption(f"MOVE {i}")
-            head.markdown(f"### {swap['text']}")
-            head.write(swap["why"])
-            grade_col.caption("Grade")
-            grade_col.markdown(f"## {swap['before']['grade']} → {swap['after']['grade']}")
-            for col, (label, key, fmt, higher_is_better) in zip(st.columns(4), MOVE_STATS):
-                stat_chip(col, label, swap["before"][key], swap["after"][key], fmt, higher_is_better)
-    if not swaps and advice["grade"] in ("A", "B"):
-        st.info("We couldn't find a single swap that clearly improves this mix — that's a good sign.")
-    elif not swaps:
-        st.info("No single swap would clearly improve this mix. The notes below explain what is holding the grade down.")
-    st.caption("Typical yearly swing = how much a normal year moves this mix up or down. Worst drop = the biggest fall from a high point before it recovered. A steadier mix usually earns a bit less per year — that trade-off is the point. Share counts use today's prices and are rounded.")
+    report_slot = st.empty()
+
+    st.markdown("**Five ways to be spread out**")
+    for dim in advice["dimensions"]:
+        name_col, text_col = st.columns([1, 3])
+        name_col.markdown(f"{dim['name']}  \n{LEVEL_MARK[dim['level']]}")
+        text_col.write(dim["text"])
+    with st.expander("What does “real bets” mean?"):
+        st.write(
+            "Real bets estimates how many genuinely separate sources of risk your money has. If several holdings usually rise and fall "
+            "together, they count as fewer independent bets — so six tech stocks may behave more like two. A broad fund counts as several, "
+            "because it holds many companies — though fewer than you might expect, since companies in the same fund tend to move together. It is this app's own measure, built from two standard ones: how evenly your money is spread, "
+            "and how closely your holdings' daily moves have matched over the last 3 years."
+        )
 
     st.divider()
-    st.subheader("What's behind that")
-    st.caption("Ordered by how much they matter. Red = worth fixing, yellow = worth knowing, green = already working.")
+    st.subheader("What stands out")
+    st.caption("Ordered by how much they matter. Red = needs attention, yellow = worth knowing, green = already working.")
     for tip in advice["tips"]:
         with st.container(border=True):
             LEVEL_BOX[tip["level"]](f"**{tip['title']}**")
             st.write(f"**Why it matters:** {tip['why']}")
-            st.write(f"**Try this:** {tip['action']}")
+            st.write(f"**What would help:** {tip['action']}")
+
+    st.divider()
+    st.subheader("What-if scenarios")
+    st.info("These are hypothetical educational scenarios, not recommendations to buy or sell. They show how historical risk and diversification would have changed under a different mix.")
+    swaps = cached_swaps(tuple(sorted(holdings.items())), cash, GRADE_YEARS)
+    for i, swap in enumerate(swaps, 1):
+        with st.container(border=True):
+            head, grade_col = st.columns([4, 1])
+            head.caption(f"SCENARIO {i}")
+            head.markdown(f"### {swap['text']}")
+            head.write(swap["why"])
+            grade_col.caption("Grade")
+            grade_col.markdown(f"## {swap['before']['grade']} → {swap['after']['grade']}")
+            for col, (label, key, fmt, higher_is_better) in zip(st.columns(4), SCENARIO_STATS):
+                stat_chip(col, label, swap["before"][key], swap["after"][key], fmt, higher_is_better)
+    if not swaps and advice["grade"] in ("A", "B"):
+        st.write("No single swap from the tested list would have clearly improved this mix — that's a good sign.")
+    elif not swaps:
+        st.write("No single swap from the tested list would have clearly improved this mix. The notes above explain what is holding the grade down.")
+    st.caption(f"Each scenario swaps part or all of one large holding for one of ten common diversifiers, then re-grades the mix over the last {GRADE_YEARS} years; the three that change the most are shown. Typical yearly swing = how much a normal year moves this mix up or down. Worst drop = the biggest fall from a high point before it recovered. A steadier mix usually earns a bit less per year — that trade-off is the point. Share counts use today's prices and are rounded.")
 
     st.divider()
     st.subheader("How it has grown")
@@ -340,8 +369,8 @@ else:
         st.caption(f"Showing {history.date_range_text(both)}{late_start_note(returns_growth, tickers, both, history.window_start(returns, growth_years), extra={bench_name: bench_daily.index[0]})}.")
 
         if swaps:
-            st.markdown("**What if you made one of the moves above?**")
-            move = st.selectbox("Move to try", [s["text"] for s in swaps], label_visibility="collapsed", key="whatif_move")
+            st.markdown("**See a scenario play out**")
+            move = st.selectbox("Scenario to replay", [s["text"] for s in swaps], label_visibility="collapsed", key="whatif_move")
             swap = next(s for s in swaps if s["text"] == move)
             after_holdings = dict(holdings)
             after_holdings[swap["sell_ticker"]] = after_holdings[swap["sell_ticker"]] - swap["sell_shares"]
@@ -350,13 +379,13 @@ else:
             after_holdings[swap["buy_ticker"]] = after_holdings.get(swap["buy_ticker"], 0) + swap["buy_shares"]
             after_weights, _ = holdings_to_weights(after_holdings, prices)
             after_daily = history.portfolio_daily(after_weights, returns_growth[list(after_weights)])
-            trio = pd.concat([your_daily.rename("You now"), after_daily.rename("After the move"), bench_daily.rename(bench_name)], axis=1, join="inner")
+            trio = pd.concat([your_daily.rename("You now"), after_daily.rename("In the scenario"), bench_daily.rename(bench_name)], axis=1, join="inner")
             st.altair_chart(compare_chart(trio.apply(history.growth_of), "line", "Value of $10,000", "$,.0f", 300, zero=False, colors=[YOU_COLOR, AFTER_COLOR, BENCH_COLOR]), use_container_width=True)
-            now, after = history.summary(trio["You now"]), history.summary(trio["After the move"])
-            st.markdown(f"Total return since {trio.index[0]:%b %Y}: now **{signed_pct(now['total_return'])}** · after the move **{signed_pct(after['total_return'])}**")
-            st.markdown(f"Worst drop along the way: now **{pct(now['max_drawdown'])}** · after the move **{pct(after['max_drawdown'])}**")
-            st.markdown(f"Typical yearly swing: now **{pct(now['volatility'])}** · after the move **{pct(after['volatility'])}**")
-            st.caption("Past prices, not a prediction — this is how the new mix would have behaved over the same stretch, with the shares you'd hold after the move.")
+            now, after = history.summary(trio["You now"]), history.summary(trio["In the scenario"])
+            st.markdown(f"Total return since {trio.index[0]:%b %Y}: now **{signed_pct(now['total_return'])}** · in the scenario **{signed_pct(after['total_return'])}**")
+            st.markdown(f"Worst drop along the way: now **{pct(now['max_drawdown'])}** · in the scenario **{pct(after['max_drawdown'])}**")
+            st.markdown(f"Typical yearly swing: now **{pct(now['volatility'])}** · in the scenario **{pct(after['volatility'])}**")
+            st.caption("Past prices, not a prediction — this is how the scenario's mix would have behaved over the same stretch.")
 
     st.divider()
     st.subheader("How it would have held up in past crashes")
@@ -368,10 +397,16 @@ else:
     ]
     worse_count = 0
     compared = 0
+    crash_rows = []
     cols = st.columns(3, gap="medium")
     for col, (name, start, end) in zip(cols, crashes):
         yours = engine.crash_test(weights, returns[tickers], start, end)
         spy = engine.crash_test({"SPY": 1.0}, returns[["SPY"]], start, end)
+        crash_rows.append({
+            "name": name, "dates": history.short_range_text(start, end),
+            "you": pct(yours["total_return"]) if yours else "not enough history",
+            "spy": pct(spy["total_return"]) if spy else "n/a",
+        })
         with col:
             with st.container(border=True):
                 st.markdown(f"**{name}**")
@@ -392,7 +427,7 @@ else:
         if worse_count == 0:
             st.success(f"This mix would have dropped **less** than the market in every crash we could check ({compared} of {compared}).")
         elif worse_count == compared:
-            st.warning(f"This mix would have dropped **more** than the market in every crash we could check ({compared} of {compared}). The moves at the top of the page are how you soften that.")
+            st.warning(f"This mix would have dropped **more** than the market in every crash we could check ({compared} of {compared}). The what-if scenarios above show what would have softened that.")
         else:
             st.info(f"This mix would have dropped more than the market in {worse_count} of the {compared} crashes we could check.")
 
@@ -475,5 +510,37 @@ else:
         for label, share in core_satellite.items():
             st.write(f"**{label}** — about {share}%")
             st.progress(share / 100)
+
+    with st.expander("How this works — data, method and limits"):
+        for heading, body in METHOD:
+            st.write(f"**{heading}** {body}")
+
+    spy_daily = history.portfolio_daily({"SPY": 1.0}, returns_3y[["SPY"]])
+    pair = pd.concat([grade_daily.rename("you"), spy_daily.rename("spy")], axis=1, join="inner")
+    mine, market = history.summary(pair["you"]), history.summary(pair["spy"])
+    steady_3y = engine.rolling_win_rate(weights, returns_3y[tickers])["monthly"]
+    report_slot.download_button(
+        "Download this check-up as a report",
+        report.build_html({
+            "date": history.date_text(pd.Timestamp.today()),
+            "basis": f"Prices from {history.date_range_text(grade_daily)}, Yahoo Finance",
+            "grade": advice["grade"], "verdict": advice["verdict"], "holdings": facts["holdings"], "true_bets": facts["true_bets"],
+            "biggest": facts["biggest"], "biggest_pct": facts["biggest_pct"], "dimensions": advice["dimensions"], "tips": advice["tips"],
+            "weights": sorted(weights_with_cash.items(), key=lambda kv: -kv[1]),
+            "assets": regions.asset_mix(weights_with_cash), "countries": regions.country_mix(weights_with_cash), "sectors": facts["sectors"],
+            "funds": [funds.describe(t, e) for t, e in (st.session_state.get("fund_info") or {}).items()],
+            "performance": [
+                ("Total return", signed_pct(mine["total_return"]), signed_pct(market["total_return"])),
+                ("Return per year", pct(mine["annual_return"]), pct(market["annual_return"])),
+                ("Typical yearly swing", pct(mine["volatility"]), pct(market["volatility"])),
+                ("Worst drop", pct(mine["max_drawdown"]), pct(market["max_drawdown"])),
+            ],
+            "performance_range": history.date_range_text(pair),
+            "steady": f"{int((steady_3y > 0).sum())} of {len(steady_3y)} months ended positive",
+            "crashes": crash_rows, "scenarios": swaps, "method": METHOD,
+        }),
+        file_name="portfolio-check-up.html", mime="text/html",
+        help="Opens in any browser. Use the browser's Print to save it as a PDF.",
+    )
 
     st.caption("Educational tool only — not financial advice. Prices from Yahoo Finance. Want every detail? The full Portfolio Analyzer has 12 sections covering the same portfolio.")

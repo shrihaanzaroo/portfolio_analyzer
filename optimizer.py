@@ -1,14 +1,15 @@
-"""Concrete swap ideas: sell part or all of a large holding and buy something that moves differently.
+"""Hypothetical swaps: part or all of a large holding replaced by something that moves differently.
 Each swap is ranked by gain = (score_after - score_before)
     + 0.5 * (true_bets_after - true_bets_before) / max(1, number of holdings)
     + 0.25 * clip(sharpe_after - sharpe_before, -1, 1), where sharpe = annual return / volatility,
-so the report-card score leads, real diversification comes second, and risk-adjusted return only nudges.
-A swap is offered only if the reader would see the difference: the grade letter goes up or real bets
-rise by at least half a bet, and real bets never fall."""
+where score is scorecard.grade's 0-4 average, so the grade leads, real diversification comes second, and risk-adjusted return only nudges.
+A swap is offered only if the reader would see the difference: the grade letter goes up, the score rises
+by half a grade, or real bets rise by half a bet; and real bets never fall."""
 import math
 
 import engine
 import history
+import scorecard
 
 CANDIDATES = {
     "BND": "a broad bond fund — it moves independently of stocks",
@@ -28,6 +29,7 @@ FRACTIONS = (0.5, 1.0)
 MAX_SOURCES = 5
 TIE_GAP = 0.05
 MIN_BETS_GAIN = 0.5
+MIN_SCORE_GAIN = 0.5
 BETS_TOLERANCE = 0.05
 
 
@@ -48,15 +50,12 @@ def holdings_to_weights(holdings, price_of):
 
 def metrics(holdings, price_of, returns, invested_share):
     weights = holdings_to_weights(holdings, price_of)
-    card = engine.report_card(weights, returns, invested_share)
+    card = scorecard.grade(weights, returns, invested_share)
     perf = history.summary(history.portfolio_daily(weights, returns))
-    grade = card["overall"]
-    if len(holdings) == 1:
-        grade = max(grade, "D")  # same cap as tips.build_tips: one stock can't score above D
     return {
-        "grade": grade,
-        "score": sum(SCORE[g] for g in card["grades"].values()) / len(card["grades"]),
-        "true_bets": float(engine.true_bets(weights, returns)["true_bets"]),
+        "grade": card["overall"],
+        "score": card["score"],
+        "true_bets": float(scorecard.real_bets(weights, returns)),
         "volatility": float(engine.portfolio_vol(weights, returns[list(weights)])),
         "max_drawdown": perf["max_drawdown"],
         "annual_return": perf["annual_return"],
@@ -77,7 +76,8 @@ def visibly_better(before, after):
     bets_gain = after["true_bets"] - before["true_bets"]
     if bets_gain < -BETS_TOLERANCE:
         return False
-    return SCORE[after["grade"]] > SCORE[before["grade"]] or bets_gain >= MIN_BETS_GAIN
+    return (SCORE[after["grade"]] > SCORE[before["grade"]] or bets_gain >= MIN_BETS_GAIN
+            or after["score"] - before["score"] >= MIN_SCORE_GAIN)
 
 
 def shares_word(n):
@@ -86,12 +86,12 @@ def shares_word(n):
 
 def swap_text(sell, n, total, buy, m):
     if n < total:
-        sold = f"{n} of your {total} {sell} shares"
+        sold = f"{n} of your {total} {sell} shares were"
     elif total == 1:
-        sold = f"your only {sell} share"
+        sold = f"your {sell} share were"
     else:
-        sold = f"all {total} of your {sell} shares"
-    return f"Replace {sold} with {m} {shares_word(m)} of {buy}"
+        sold = f"your {total} {sell} shares were"
+    return f"If {sold} {m} {shares_word(m)} of {buy} instead"
 
 
 def suggest_swaps(holdings, prices, returns, cash, k=3):
