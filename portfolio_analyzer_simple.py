@@ -10,7 +10,7 @@ import regions
 import report
 import tips
 
-st.set_page_config(page_title="Portfolio Check-Up", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="Portfolio Check-Up", page_icon="🩺", layout="wide", initial_sidebar_state="collapsed")
 cached_download = st.cache_data(show_spinner="Downloading price history...")(engine.download_prices)
 
 LEVEL_BOX = {"high": st.error, "medium": st.warning, "good": st.success}
@@ -175,97 +175,102 @@ if "weights" not in st.session_state:
 if "cash" not in st.session_state:
     st.session_state.cash = 0.0
 
-st.sidebar.header("What you own")
-uploaded = st.sidebar.file_uploader(
-    "Upload a CSV from your brokerage (Fidelity, Schwab, Robinhood, Vanguard…)",
-    type=["csv"],
-    help="Export the Positions or Holdings page as a CSV. For Robinhood, use the account activity report.",
-)
-if uploaded is not None:
-    file_key = f"{uploaded.name}:{uploaded.size}"
-    if st.session_state.get("csv_applied") != file_key:
-        try:
-            parsed = brokerage_csv.parse(uploaded.getvalue())
-        except ValueError as e:
-            st.sidebar.error(str(e))
-        else:
-            shares = dict(parsed["shares"])
-            if parsed["value_only"]:
-                latest = cached_download(list(parsed["value_only"]), "1mo")
-                for t, dollars in parsed["value_only"].items():
-                    if t in latest.columns and not latest[t].dropna().empty:
-                        shares[t] = round(dollars / float(latest[t].dropna().iloc[-1]), 2)
-            st.session_state.holdings_df = pd.DataFrame({"Ticker": list(shares), "Shares": list(shares.values())})
-            if parsed["cash"] > 0:
-                st.session_state.cash = float(parsed["cash"])
-            st.session_state.csv_applied = file_key
-            st.session_state.csv_notes = parsed["notes"]
-            st.rerun()
-    if st.session_state.get("csv_notes") is not None:
-        st.sidebar.success("Loaded your holdings from the file. Check them below, then tap Analyze.")
-        for note in st.session_state.csv_notes:
-            st.sidebar.caption(note)
-holdings_df = st.sidebar.data_editor(
-    st.session_state.holdings_df,
-    num_rows="dynamic",
-    column_config={
-        "Ticker": st.column_config.TextColumn("Ticker"),
-        "Shares": st.column_config.NumberColumn("Shares", min_value=0),
-    },
-    hide_index=True,
-)
-st.sidebar.caption("Shares = how many you own. An estimate is fine — this is about patterns, not exact accounting.")
-
-if not holdings_df.empty:
-    ticker_to_delete = st.sidebar.selectbox("Remove a holding", holdings_df["Ticker"].tolist())
-    if st.sidebar.button("Delete holding", use_container_width=True):
-        st.session_state.holdings_df = holdings_df[holdings_df["Ticker"] != ticker_to_delete].reset_index(drop=True)
-        st.rerun()
-
-tickers_typed = [str(t).strip().upper() for t in holdings_df["Ticker"] if str(t).strip()]
-duplicates = {t for t in tickers_typed if tickers_typed.count(t) > 1}
-if duplicates:
-    st.sidebar.warning(f"Duplicate ticker(s): {', '.join(duplicates)} — shares will be combined.")
-
-cash_input = st.sidebar.number_input("Cash ($)", min_value=0.0, value=st.session_state.cash, step=100.0, help="Money you've set aside but not invested.")
-
-if st.sidebar.button("Analyze", type="primary", use_container_width=True):
-    st.session_state.holdings_df = holdings_df
-    st.session_state.cash = cash_input
-    holdings = holdings_df_to_dict(holdings_df)
-    if not holdings:
-        st.error("Add at least one holding before analyzing.")
-        st.stop()
-
-    tickers = list(holdings.keys())
-    fund_info = cached_funds(tuple(tickers))
-    funds.apply(fund_info)
-    st.session_state.fund_info = fund_info
-    prices = cached_download(download_list(tickers), PERIOD)
-    recent = history.window(prices, GRADE_YEARS)
-
-    missing = [t for t in tickers if t not in prices.columns or recent[t].dropna().empty]
-    if missing:
-        st.error(f"No price data available for: {', '.join(missing)}. This can happen with a mistyped ticker, or if Yahoo Finance is busy — try again in a moment.")
-        st.stop()
-
-    st.session_state.holdings = holdings
-    st.session_state.prices = prices
-    st.session_state.returns = engine.compute_returns(prices)
-    st.session_state.weights, st.session_state.stock_value = holdings_to_weights(holdings, prices)
-
-
 st.title("Portfolio Check-Up")
 st.caption("A plain-English look at whether your investments are really spread out — and what to do about it.")
+analyzed = st.session_state.weights is not None
 
-if st.session_state.weights is None:
+if not analyzed:
     st.info(
         "**What this does:** you tell it what you own, and it gives you a grade, what is holding it back, "
         "what-if scenarios that show what would change it, how your money has grown compared with the market, and where it really is — by type, "
-        "by country, and by industry. "
-        "Your holdings live in the **sidebar** (on a phone, tap the **›** arrow at the top-left to open it). "
-        "The defaults there are just an example: edit them, then tap **Analyze**."
+        "by country, and by industry. Start below: the list is just an example, so change it to what you own, then tap **Analyze**."
     )
+
+with st.container(border=True):
+    st.subheader("Step 1 — What you own" if not analyzed else "Your holdings")
+    if analyzed:
+        st.caption("Change anything here and tap Analyze again to refresh the results below.")
+    st.write("Type a ticker and how many shares you own, one per row. Use the **+** row at the bottom to add more. An estimate is fine — this is about patterns, not exact accounting.")
+    holdings_df = st.data_editor(
+        st.session_state.holdings_df,
+        num_rows="dynamic",
+        column_config={
+            "Ticker": st.column_config.TextColumn("Ticker (e.g. AAPL, VOO)"),
+            "Shares": st.column_config.NumberColumn("Shares you own", min_value=0),
+        },
+        hide_index=True,
+        use_container_width=True,
+    )
+    tickers_typed = [str(t).strip().upper() for t in holdings_df["Ticker"] if str(t).strip()]
+    duplicates = {t for t in tickers_typed if tickers_typed.count(t) > 1}
+    if duplicates:
+        st.warning(f"Duplicate ticker(s): {', '.join(duplicates)} — shares will be combined.")
+
+    left, right = st.columns(2)
+    if not holdings_df.empty:
+        ticker_to_delete = left.selectbox("Remove a holding", holdings_df["Ticker"].tolist())
+        if left.button("Delete holding", use_container_width=True):
+            st.session_state.holdings_df = holdings_df[holdings_df["Ticker"] != ticker_to_delete].reset_index(drop=True)
+            st.rerun()
+    cash_input = right.number_input("Cash ($) you're keeping uninvested", min_value=0.0, value=st.session_state.cash, step=100.0, help="Money you've set aside but not invested. Leave at 0 if none.")
+
+    with st.expander("Or upload a file from your brokerage (Fidelity, Schwab, Robinhood, Vanguard…)"):
+        uploaded = st.file_uploader("CSV file", type=["csv"], help="Export the Positions or Holdings page as a CSV. For Robinhood, use the account activity report.")
+        if uploaded is not None:
+            file_key = f"{uploaded.name}:{uploaded.size}"
+            if st.session_state.get("csv_applied") != file_key:
+                try:
+                    parsed = brokerage_csv.parse(uploaded.getvalue())
+                except ValueError as e:
+                    st.error(str(e))
+                else:
+                    shares = dict(parsed["shares"])
+                    if parsed["value_only"]:
+                        latest = cached_download(list(parsed["value_only"]), "1mo")
+                        for t, dollars in parsed["value_only"].items():
+                            if t in latest.columns and not latest[t].dropna().empty:
+                                shares[t] = round(dollars / float(latest[t].dropna().iloc[-1]), 2)
+                    st.session_state.holdings_df = pd.DataFrame({"Ticker": list(shares), "Shares": list(shares.values())})
+                    if parsed["cash"] > 0:
+                        st.session_state.cash = float(parsed["cash"])
+                    st.session_state.csv_applied = file_key
+                    st.session_state.csv_notes = parsed["notes"]
+                    st.rerun()
+            if st.session_state.get("csv_notes") is not None:
+                st.success("Loaded your holdings from the file. Check them above, then tap Analyze.")
+                for note in st.session_state.csv_notes:
+                    st.caption(note)
+
+    if not analyzed:
+        st.subheader("Step 2 — Analyze")
+    if st.button("Analyze my portfolio", type="primary", use_container_width=True):
+        st.session_state.holdings_df = holdings_df
+        st.session_state.cash = cash_input
+        holdings = holdings_df_to_dict(holdings_df)
+        if not holdings:
+            st.error("Add at least one holding before analyzing.")
+            st.stop()
+
+        tickers = list(holdings.keys())
+        fund_info = cached_funds(tuple(tickers))
+        funds.apply(fund_info)
+        st.session_state.fund_info = fund_info
+        prices = cached_download(download_list(tickers), PERIOD)
+        recent = history.window(prices, GRADE_YEARS)
+
+        missing = [t for t in tickers if t not in prices.columns or recent[t].dropna().empty]
+        if missing:
+            st.error(f"No price data available for: {', '.join(missing)}. This can happen with a mistyped ticker, or if Yahoo Finance is busy — try again in a moment.")
+            st.stop()
+
+        st.session_state.holdings = holdings
+        st.session_state.prices = prices
+        st.session_state.returns = engine.compute_returns(prices)
+        st.session_state.weights, st.session_state.stock_value = holdings_to_weights(holdings, prices)
+        st.rerun()
+
+if st.session_state.weights is None:
+    st.caption("Your results will appear here after you tap Analyze.")
 else:
     weights = st.session_state.weights
     returns = st.session_state.returns
