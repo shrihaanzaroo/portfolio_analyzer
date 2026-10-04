@@ -81,31 +81,42 @@ def grade(weights, returns, invested_share):
     if sec["sectors"]:
         top = sec["sectors"][0]
         industry_text = f"Your biggest industry is {top['sector']}, at {top['pct']:.0f}% of your stock money (the S&P 500 has about {top['sp']:.0f}% there)."
+        industry_short = f"{top['pct']:.0f}% in {top['sector']}"
     else:
         industry_text = "You hold no stocks, so there is no industry split to judge."
+        industry_short = "No stocks held"
     if abroad is None:
         country_text = "Nothing here is tied to a country (cash or gold only)."
+        country_short = "Not tied to a country"
     elif abroad < 0.05:
         country_text = f"Almost everything is in one country: the {HOME}."
+        country_short = f"{abroad * 100:.0f}% outside the U.S."
     else:
         country_text = f"About {abroad * 100:.0f}% of your money is outside the {HOME}."
+        country_short = f"{abroad * 100:.0f}% outside the U.S."
     if len(tickers) == 1 and is_fund(tickers[0]):
-        together_points, together_text = 0, "One fund: everything inside it rises and falls with the same market."
+        together_points, together_text, together_short = 0, "One fund: everything inside it rises and falls with the same market.", "One fund, one market"
     elif len(tickers) == 1:
-        together_points, together_text = 0, "With one holding, everything moves as one."
+        together_points, together_text, together_short = 0, "With one holding, everything moves as one.", "One holding"
     elif avg_corr is None:
-        together_points, together_text = 4, "Your holdings are too steady to move together in any way that matters."
+        together_points, together_text, together_short = 4, "Your holdings are too steady to move together in any way that matters.", "Very steady"
     else:
         together_points = 4 if avg_corr <= 0.2 else 3 if avg_corr <= 0.4 else 2 if avg_corr <= 0.6 else 1
         together_text = f"On a typical day your holdings' moves match about {max(0, avg_corr) * 100:.0f}% of the time. Lower means they protect each other more."
+        together_short = f"Move {max(0, avg_corr) * 100:.0f}% in sync"
 
     dimensions = [
-        {"name": "Across companies", "level": level(points["Diversification"]),
+        {"name": "Across companies", "label": "Companies", "score": points["Diversification"], "level": level(points["Diversification"]),
+         "short": f"Like {eb:.0f} equal holdings" if eb >= 1.5 else "One company",
          "text": f"{'Looking inside your funds, your' if any(is_fund(t) for t in tickers) else 'Your'} money is spread like about {eb:.0f} equal-sized companies." if eb >= 1.5 else "Your money rides on a single company."},
-        {"name": "Across industries", "level": level(points["Sector balance"]), "text": industry_text},
-        {"name": "Across countries", "level": level(points["Countries"]), "text": country_text},
-        {"name": "Across types of investment", "level": level(points["Types of investment"]),
+        {"name": "Across industries", "label": "Industries", "score": points["Sector balance"], "level": level(points["Sector balance"]),
+         "short": industry_short, "text": industry_text},
+        {"name": "Across countries", "label": "Countries", "score": points["Countries"], "level": level(points["Countries"]),
+         "short": country_short, "text": country_text},
+        {"name": "Across types of investment", "label": "Investment types", "score": points["Types of investment"], "level": level(points["Types of investment"]),
+         "short": f"{kind_share * 100:.0f}% {kind.lower()}",
          "text": f"{kind_share * 100:.0f}% of your invested money is in {kind.lower()}. Stocks, bonds, gold and cash behave differently in a bad year."},
-        {"name": "Moving independently", "level": level(together_points), "text": together_text},
+        {"name": "Moving independently", "label": "Independence", "score": together_points, "level": level(together_points),
+         "short": together_short, "text": together_text},
     ]
     return {"overall": overall, "score": score, "points": points, "dimensions": dimensions}

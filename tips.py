@@ -122,9 +122,9 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
         names = c["names"]
         tips.append({
             "level": "medium",
-            "title": f"{join_names(names)} move together — they act like one bet",
-            "why": f"When one of them has a bad day the others usually do too (their moves match about {c['corr'] * 100:.0f}% of the time). Together they are {pct(c['money'])} of your money, so this is really one big bet, not {COUNT_WORDS.get(len(names), str(len(names)))}.",
-            "action": "Treat them as one position when deciding how much to invest. To turn them into real separate bets, keep the one you believe in most and move the rest into something that moves differently — the what-if scenarios further down show how that would have changed things.",
+            "title": f"{join_names(names)} move together, so they don't fully spread your risk",
+            "why": f"When one of them has a bad day the others usually do too (their moves match about {c['corr'] * 100:.0f}% of the time). Together they are {pct(c['money'])} of your money — holding all {COUNT_WORDS.get(len(names), str(len(names)))} adds far less independent risk-spreading than {COUNT_WORDS.get(len(names), str(len(names)))} separate holdings usually would.",
+            "action": "Treat them as one position when deciding how much to invest. To make them count as separate bets again, keep the one you believe in most and move the rest into something that moves differently — the what-if scenarios further down show how that would have changed things.",
         })
 
     if overlaps and overlaps[0][2] >= 0.01:
@@ -135,6 +135,20 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
             "why": f"{fund} already holds {stock}. About {pct(implied)} of your money is in {stock} through the fund, on top of the shares you hold directly.",
             "action": f"That's fine if you want {stock} to be a deliberate extra bet — just know your real exposure is bigger than the {stock} line alone shows.",
         })
+
+    fund_overlap_totals = {}
+    for stock, f1, f2, w in engine.fund_overlap_pairs(weights):
+        key = tuple(sorted((f1, f2)))
+        fund_overlap_totals[key] = fund_overlap_totals.get(key, 0) + w
+    if fund_overlap_totals:
+        (fund_a, fund_b), overlap_w = max(fund_overlap_totals.items(), key=lambda kv: kv[1])
+        if overlap_w >= 0.03:
+            tips.append({
+                "level": "medium",
+                "title": f"{fund_a} and {fund_b} hold a lot of the same companies",
+                "why": f"Looking inside both funds, about {pct(overlap_w)} of your money sits in companies they both own. That slice isn't spreading your risk any further — it's the same handful of large companies counted twice.",
+                "action": f"Not a mistake, just worth knowing: if you wanted two genuinely different funds, check what each one actually holds before assuming they diversify each other.",
+            })
 
     max_sector = sec["max_sector"]
     if sec["sectors"] and max_sector > SECTOR_HEAVY:

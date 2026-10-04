@@ -1,3 +1,5 @@
+from html import escape
+
 import pandas as pd
 import altair as alt
 import streamlit as st
@@ -13,8 +15,27 @@ import tips
 st.set_page_config(page_title="Portfolio Check-Up", page_icon="🩺", layout="wide", initial_sidebar_state="collapsed")
 cached_download = st.cache_data(show_spinner="Downloading price history...")(engine.download_prices)
 
-LEVEL_BOX = {"high": st.error, "medium": st.warning, "good": st.success}
 LEVEL_MARK = {"high": ":red[Needs attention]", "medium": ":orange[Worth knowing]", "good": ":green[Working]"}
+LEVEL_LABEL = {"high": "Needs attention", "medium": "Worth knowing", "good": "Working"}
+LEVEL_COLOR = {"high": "#d64545", "medium": "#e08a00", "good": "#1f9d55"}
+COUNT_LABEL = {"high": "need attention", "medium": "worth knowing", "good": "working"}
+TIP_ICON = {"high": "!", "medium": "i", "good": "✓"}
+SCORE_LETTER = "FDCBA"
+RING_RADIUS = 30
+VISUAL_CSS = """<style>
+.rings{display:flex;flex-wrap:wrap;gap:12px;margin:4px 0 12px}
+.ring-card{flex:1 1 120px;border:1px solid rgba(128,128,128,.25);border-radius:12px;padding:14px 8px 12px;text-align:center}
+.ring-label{font-weight:600;margin-top:6px}
+.ring-short{font-size:.85rem;opacity:.7;line-height:1.3}
+.tip-counts{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+.tip-count{border-radius:999px;padding:3px 12px;font-size:.85rem;font-weight:600;color:#fff}
+.tip{display:flex;gap:14px;border:1px solid rgba(128,128,128,.25);border-left:5px solid;border-radius:10px;padding:14px 16px;margin:0 0 10px}
+.tip-icon{flex:0 0 30px;height:30px;border-radius:50%;color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center}
+.tip-tag{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.tip-title{font-weight:600;font-size:1.05rem;margin:2px 0 6px}
+.tip-why{font-size:.9rem;opacity:.75;margin-bottom:8px}
+.tip-help{font-size:.95rem}
+</style>"""
 PERIOD = "max"
 GRADE_YEARS = 3
 GROWTH_WINDOWS = {"1 year": 1, "3 years": 3, "5 years": 5, "10 years": 10, "All history": None}
@@ -153,6 +174,47 @@ def compare_chart(wide, kind, y_title, y_format, height, zero, colors=None):
     return alt.layer(body, dots, rule).properties(height=height)
 
 
+def score_rings(dimensions):
+    circumference = 2 * 3.14159 * RING_RADIUS
+    cards = []
+    for d in dimensions:
+        color = LEVEL_COLOR[d["level"]]
+        filled = max(d["score"], 0.25) / 4 * circumference  # a sliver even at 0, so an empty ring doesn't look broken
+        cards.append(
+            f"<div class='ring-card' title='{escape(d['text'])}'>"
+            "<svg viewBox='0 0 72 72' width='76' height='76'>"
+            f"<circle cx='36' cy='36' r='{RING_RADIUS}' fill='none' stroke='rgba(128,128,128,.2)' stroke-width='7'/>"
+            f"<circle cx='36' cy='36' r='{RING_RADIUS}' fill='none' stroke='{color}' stroke-width='7' stroke-linecap='round' "
+            f"stroke-dasharray='{filled:.1f} {circumference:.1f}' transform='rotate(-90 36 36)'/>"
+            f"<text x='36' y='38' text-anchor='middle' dominant-baseline='middle' font-size='24' font-weight='700' fill='{color}'>{SCORE_LETTER[d['score']]}</text>"
+            "</svg>"
+            f"<div class='ring-label'>{escape(d['label'])}</div>"
+            f"<div class='ring-short'>{escape(d['short'])}</div>"
+            "</div>"
+        )
+    return "<div class='rings'>" + "".join(cards) + "</div>"
+
+
+def tip_cards(tips_list):
+    counts = [(lvl, sum(t["level"] == lvl for t in tips_list)) for lvl in ("high", "medium", "good")]
+    chips = "".join(
+        f"<span class='tip-count' style='background:{LEVEL_COLOR[lvl]}'>{n} {COUNT_LABEL[lvl]}</span>"
+        for lvl, n in counts if n
+    )
+    cards = "".join(
+        f"<div class='tip' style='border-left-color:{LEVEL_COLOR[t['level']]}'>"
+        f"<div class='tip-icon' style='background:{LEVEL_COLOR[t['level']]}'>{TIP_ICON[t['level']]}</div>"
+        "<div>"
+        f"<div class='tip-tag' style='color:{LEVEL_COLOR[t['level']]}'>{LEVEL_LABEL[t['level']]}</div>"
+        f"<div class='tip-title'>{escape(t['title'])}</div>"
+        f"<div class='tip-why'>{escape(t['why'])}</div>"
+        f"<div class='tip-help'><b>What would help:</b> {escape(t['action'])}</div>"
+        "</div></div>"
+        for t in tips_list
+    )
+    return f"<div class='tip-counts'>{chips}</div>{cards}"
+
+
 def donut(rows, field, title, colors):
     df = pd.DataFrame(rows)
     df["share"] = df["pct"] / 100
@@ -181,9 +243,8 @@ analyzed = st.session_state.weights is not None
 
 if not analyzed:
     st.info(
-        "**What this does:** you tell it what you own, and it gives you a grade, what is holding it back, "
-        "what-if scenarios that show what would change it, how your money has grown compared with the market, and where it really is — by type, "
-        "by country, and by industry. Start below: the list is just an example, so change it to what you own, then tap **Analyze**."
+        "**What this does:** type what you own below and tap **Analyze** for a grade, what's holding it back, "
+        "and what-if swaps that would improve it. The list below is just an example — change it to what you own."
     )
 
 with st.container(border=True):
@@ -294,10 +355,10 @@ else:
         g.markdown(f"# {advice['grade']}")
         g.caption("Grade")
         v.markdown(f"#### {advice['verdict']}")
-        v.markdown(
-            f"**{facts['holdings']} holding{'' if facts['holdings'] == 1 else 's'}** · acting like **{facts['true_bets']:.1f} real bets** · "
-            f"biggest: **{facts['biggest']} ({facts['biggest_pct']:.0f}% of your money)**"
-        )
+        m1, m2, m3 = v.columns(3)
+        m1.metric("Holdings", facts["holdings"])
+        m2.metric("Real bets", f"{facts['true_bets']:.1f}")
+        m3.metric("Biggest holding", f"{facts['biggest']} · {facts['biggest_pct']:.0f}%")
         v.caption("Grades run A to F. They reward being spread across companies, industries, countries and types of investment, and holdings that don't all move together.")
     grade_note = late_start_note(returns_3y, tickers, grade_daily, history.window_start(returns, GRADE_YEARS), "so the grade only covers that stretch")
     if grade_note:
@@ -309,27 +370,31 @@ else:
 
     report_slot = st.empty()
 
+    st.markdown(VISUAL_CSS, unsafe_allow_html=True)
     st.markdown("**Five ways to be spread out**")
-    for dim in advice["dimensions"]:
-        name_col, text_col = st.columns([1, 3])
-        name_col.markdown(f"{dim['name']}  \n{LEVEL_MARK[dim['level']]}")
-        text_col.write(dim["text"])
+    st.caption("A fuller ring means more spread out. Each ring is graded on its own.")
+    st.markdown(score_rings(advice["dimensions"]), unsafe_allow_html=True)
+    with st.expander("What each ring means"):
+        for dim in advice["dimensions"]:
+            st.markdown(f"**{dim['name']}** — {LEVEL_MARK[dim['level']]}  \n{dim['text']}")
     with st.expander("What does “real bets” mean?"):
         st.write(
-            "Real bets estimates how many genuinely separate sources of risk your money has. If several holdings usually rise and fall "
-            "together, they count as fewer independent bets — so six tech stocks may behave more like two. A broad fund counts as several, "
-            "because it holds many companies — though fewer than you might expect, since companies in the same fund tend to move together. It is this app's own measure, built from two standard ones: how evenly your money is spread, "
-            "and how closely your holdings' daily moves have matched over the last 3 years."
+            "Real bets estimates how many genuinely separate sources of risk your money has — not how many tickers you own, but how many "
+            "*independent* ones. If several holdings usually rise and fall together, they count as fewer independent bets — so six tech stocks "
+            "may behave more like two. A broad fund counts as several, because it holds many companies — though fewer than you might expect, "
+            "since companies in the same fund tend to move together. It is this app's own measure, built from two standard ones: how evenly "
+            "your money is spread, and how closely your holdings' daily moves have matched over the last 3 years."
+        )
+        st.write(
+            "One limit worth knowing: real bets only measures overlap *within* your holdings. It doesn't erase risk everyone shares — a fund "
+            "spread across 500 companies is still one big bet on the stock market as a whole. That's why **across types of investment** is "
+            "graded separately above: being diversified across companies and being diversified across asset classes are two different things."
         )
 
     st.divider()
     st.subheader("What stands out")
-    st.caption("Ordered by how much they matter. Red = needs attention, yellow = worth knowing, green = already working.")
-    for tip in advice["tips"]:
-        with st.container(border=True):
-            LEVEL_BOX[tip["level"]](f"**{tip['title']}**")
-            st.write(f"**Why it matters:** {tip['why']}")
-            st.write(f"**What would help:** {tip['action']}")
+    st.caption("Most important first.")
+    st.markdown(tip_cards(advice["tips"]), unsafe_allow_html=True)
 
     st.divider()
     st.subheader("What-if scenarios")
@@ -534,6 +599,24 @@ else:
         for label, share in core_satellite.items():
             st.write(f"**{label}** — about {share}%")
             st.progress(share / 100)
+
+    with st.expander("About this project"):
+        st.write(
+            "**Portfolio Check-Up** takes a list of holdings and explains, in plain English, whether they're actually spread out — "
+            "not just how many tickers there are, but how many genuinely independent risks they add up to. It grades the mix, looks "
+            "inside any ETF or mutual fund to see what it really holds, and shows what-if scenarios for common ways to improve it."
+        )
+        st.write(
+            "**Designed and built by Shrihaan Zaroo**, as an independent project. The main ideas behind it — real bets, the grade, "
+            "and fund look-through — are explained above and in the method notes below; the short version is that they're built from "
+            "standard statistics (concentration and correlation) combined into estimates that are this app's own, not an industry standard."
+        )
+        st.write(
+            "**Limits worth knowing:** everything here looks backward, three years is a short sample, and holdings tend to move "
+            "together more in a crash than in calm years. Country and fund breadth figures are approximate, and taxes, fees and "
+            "trading costs are ignored. This is an educational tool, not financial advice."
+        )
+        st.write("**Contact:** [github.com/shrihaanzaroo/portfolio_analyzer](https://github.com/shrihaanzaroo/portfolio_analyzer) · shrihaanzaroo@gmail.com")
 
     with st.expander("How this works — data, method and limits"):
         for heading, body in METHOD:
