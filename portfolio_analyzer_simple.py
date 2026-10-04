@@ -63,9 +63,9 @@ METHOD = [
     ("Funds.", "ETFs and mutual funds are looked up on Yahoo Finance and looked inside: their largest holdings, industry split and stock/bond/cash split. The rest of a fund is spread across an estimated number of companies for its category (about 50 for an S&P 500 fund, 60 for a total-market fund), not its exact holdings list. If the lookup fails, a built-in table of common index funds is used."),
     ("Moving together.", "Correlation of daily returns between each pair of holdings — a standard statistic from -1 to 1. Holdings that barely move (such as cash-like funds) are left out."),
     ("Real bets.", "This app's own estimate, not an industry standard: the equal-sized-holdings number divided by (1 + (that number - 1) x the average correlation). With no correlation it equals the number of holdings; as holdings move together it falls toward 1. Companies inside the same fund are assumed to move together with a correlation of 0.35, a typical long-run figure for large companies, because a fund's insides cannot be measured from its price."),
-    ("The grade.", "An average of seven checks, each scored 0 to 4: spread across companies, across industries, across countries, across types of investment, swings compared with the S&P 500, share of months that ended positive, and near-duplicate holdings. It is discounted when most of the money sits in cash. The cut-offs are judgment calls."),
+    ("The grade.", "An average of six checks, each scored 0 to 4: spread across companies, across industries, across countries, swings compared with the S&P 500, share of months that ended positive, and near-duplicate holdings. Being all in stocks is not marked down on its own; bonds and gold still help through the swings check. It is discounted when most of the money sits in cash. The cut-offs are judgment calls."),
     ("Scenarios.", "About 100 hypothetical swaps are tried: half or all of each of your five largest holdings, into each of ten common diversifiers (bond, gold, broad-market, international, and steady-industry holdings). Each new mix is re-graded the same way over the same 3 years, and the three that change the most are shown."),
-    ("Tested on.", "Six large tech stocks grade C (about 2 real bets, one industry). An S&P 500 fund with bonds, gold and stocks from other industries grades B, and A once an international fund is added. A single stock is capped at D. A single total-market index fund grades B: many companies, but one country and one type of investment. Three overlapping U.S. stock funds grade B but count as about 1.3 real bets."),
+    ("Tested on.", "Six large tech stocks grade C (about 2 real bets, one industry). An S&P 500 fund with bonds, gold and stocks from other industries grades A (just at the cut-off), and more firmly A once an international fund is added. A single stock is capped at D. A single total-market index fund grades B: many companies, but one country. Three overlapping U.S. stock funds grade B but count as about 1.3 real bets."),
     ("Limits.", "Everything here looks backward: it describes how this mix behaved, not how it will. Three years is a short sample, and holdings tend to move together more in a crash than in calm years. Country and fund breadth figures are approximate. Taxes, fees and trading costs are ignored. This is an educational tool, not financial advice."),
 ]
 
@@ -359,7 +359,7 @@ else:
         m1.metric("Holdings", facts["holdings"])
         m2.metric("Real bets", f"{facts['true_bets']:.1f}")
         m3.metric("Biggest holding", f"{facts['biggest']} · {facts['biggest_pct']:.0f}%")
-        v.caption("Grades run A to F. They reward being spread across companies, industries, countries and types of investment, and holdings that don't all move together.")
+        v.caption("Grades run A to F. They reward being spread across companies, industries and countries, and holdings that don't all move together.")
     grade_note = late_start_note(returns_3y, tickers, grade_daily, history.window_start(returns, GRADE_YEARS), "so the grade only covers that stretch")
     if grade_note:
         st.caption(f"Based on prices from {history.date_range_text(grade_daily)}{grade_note}.")
@@ -371,7 +371,7 @@ else:
     report_slot = st.empty()
 
     st.markdown(VISUAL_CSS, unsafe_allow_html=True)
-    st.markdown("**Five ways to be spread out**")
+    st.markdown("**Four ways to be spread out**")
     st.caption("A fuller ring means more spread out. Each ring is graded on its own.")
     st.markdown(score_rings(advice["dimensions"]), unsafe_allow_html=True)
     with st.expander("What each ring means"):
@@ -387,8 +387,8 @@ else:
         )
         st.write(
             "One limit worth knowing: real bets only measures overlap *within* your holdings. It doesn't erase risk everyone shares — a fund "
-            "spread across 500 companies is still one big bet on the stock market as a whole. That's why **across types of investment** is "
-            "graded separately above: being diversified across companies and being diversified across asset classes are two different things."
+            "spread across 500 companies is still one big bet on the stock market as a whole. Being spread across companies and being spread "
+            "across types of investment are two different things; the **By type of investment** chart further down shows the second."
         )
 
     st.divider()

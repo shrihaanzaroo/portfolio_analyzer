@@ -1,5 +1,5 @@
-"""The Check-Up's grade: engine.report_card's five categories plus two it does not cover,
-spread across countries and across types of investment. Each category scores 0-4, the
+"""The Check-Up's grade: engine.report_card's five categories plus one it does not cover,
+spread across countries. Each category scores 0-4, the
 overall letter is their average, discounted by engine.earned when most money sits in cash."""
 import engine
 import reference_data as ref
@@ -48,14 +48,6 @@ def country_points(abroad):
     return 1
 
 
-def type_points(share):
-    if share <= 0.70: return 4
-    if share <= 0.80: return 3
-    if share <= 0.90: return 2
-    if share <= 0.97: return 1
-    return 0
-
-
 def level(points):
     return "good" if points >= 3 else "medium" if points == 2 else "high"
 
@@ -64,9 +56,7 @@ def grade(weights, returns, invested_share):
     card = engine.report_card(weights, returns, invested_share)
     points = {name: POINTS[letter] for name, letter in card["grades"].items()}
     abroad = abroad_share(weights)
-    kind, kind_share = largest_type(weights)
     points["Countries"] = country_points(abroad)
-    points["Types of investment"] = type_points(kind_share)
 
     score = sum(points.values()) / len(points)
     overall = engine.letter_grade(engine.earned(score, invested_share))
@@ -113,9 +103,6 @@ def grade(weights, returns, invested_share):
          "short": industry_short, "text": industry_text},
         {"name": "Across countries", "label": "Countries", "score": points["Countries"], "level": level(points["Countries"]),
          "short": country_short, "text": country_text},
-        {"name": "Across types of investment", "label": "Investment types", "score": points["Types of investment"], "level": level(points["Types of investment"]),
-         "short": f"{kind_share * 100:.0f}% {kind.lower()}",
-         "text": f"{kind_share * 100:.0f}% of your invested money is in {kind.lower()}. Stocks, bonds, gold and cash behave differently in a bad year."},
         {"name": "Moving independently", "label": "Independence", "score": together_points, "level": level(together_points),
          "short": together_short, "text": together_text},
     ]

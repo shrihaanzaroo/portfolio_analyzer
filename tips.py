@@ -222,15 +222,8 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
             "action": "Nice. Keep an eye on this as you add holdings.",
         })
 
-    kind, kind_share = scorecard.largest_type(weights)
+    kind, _ = scorecard.largest_type(weights)
     abroad = scorecard.abroad_share(weights)
-    if kind_share > 0.97 and (n == 1 or hedges):
-        tips.append({
-            "level": "medium",
-            "title": f"Everything you've invested is in {kind.lower()}",
-            "why": f"{kind} tend to fall together in a bad year, however many of them you own. Other types of investment — bonds, gold, cash — often hold up when they do.",
-            "action": "A bond fund like BND, or some gold (GLD), is the classic cushion. Even 10–15% changes how a bad year feels.",
-        })
     if abroad is not None and abroad < 0.05:
         tips.append({
             "level": "medium",

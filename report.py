@@ -43,7 +43,7 @@ def build_html(d):
         f"<p class='sub'>{d['holdings']} holding{'' if d['holdings'] == 1 else 's'} · acting like {d['true_bets']:.1f} real bets · biggest: {escape(d['biggest'])} ({d['biggest_pct']:.0f}% of your money)</p></div></div>"
     )
 
-    parts.append("<h2>Five ways to be spread out</h2><table>")
+    parts.append("<h2>Four ways to be spread out</h2><table>")
     parts.append(rows(d["dimensions"], lambda x: [td(x["name"]), tag(x["level"]), td(x["text"])]))
     parts.append("</table>")
 
