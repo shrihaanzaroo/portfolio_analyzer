@@ -4,7 +4,10 @@ Each swap is ranked by gain = (score_after - score_before)
     + 0.25 * clip(sharpe_after - sharpe_before, -1, 1), where sharpe = annual return / volatility,
 where score is scorecard.grade's 0-4 average, so the grade leads, real diversification comes second, and risk-adjusted return only nudges.
 A swap is offered only if the reader would see the difference: the grade letter goes up, the score rises
-by half a grade, or real bets rise by half a bet; and real bets never fall."""
+by half a grade, or real bets rise by half a bet; and real bets never fall.
+When fewer than k such swaps exist (a mix that already grades well), the rest are filled with smaller tweaks:
+half of one holding, the grade letter and real bets not lower, and at least one number on the card visibly better
+(grade, real bets, yearly swing or worst drop as rounded there), ranked by grade letter, real bets, swing and drop gained."""
 import math
 
 import engine
@@ -80,6 +83,26 @@ def visibly_better(before, after):
             or after["score"] - before["score"] >= MIN_SCORE_GAIN)
 
 
+def shows_improvement(before, after):
+    """True if at least one number on the scenario card, as rounded there, gets better."""
+    return (SCORE[after["grade"]] > SCORE[before["grade"]]
+            or round(after["true_bets"], 1) > round(before["true_bets"], 1)
+            or round(after["volatility"] * 100) < round(before["volatility"] * 100)
+            or round(after["max_drawdown"] * 100) > round(before["max_drawdown"] * 100))
+
+
+def tweak_gain(before, after, n_holdings):
+    """How much a smaller tweak improves the mix; None if it isn't worth showing."""
+    if SCORE[after["grade"]] < SCORE[before["grade"]] or after["true_bets"] < before["true_bets"] - BETS_TOLERANCE:
+        return None
+    if not shows_improvement(before, after):
+        return None
+    vol_drop = before["volatility"] - after["volatility"]
+    drawdown_gain = after["max_drawdown"] - before["max_drawdown"]  # drawdowns are negative, so smaller drop = positive
+    gain = (SCORE[after["grade"]] - SCORE[before["grade"]]) + 0.5 * (after["true_bets"] - before["true_bets"]) / max(1, n_holdings) + vol_drop + drawdown_gain
+    return gain if gain > 0 else None
+
+
 def shares_word(n):
     return "share" if n == 1 else "shares"
 
@@ -109,7 +132,7 @@ def suggest_swaps(holdings, prices, returns, cash, k=3):
             price_of[t] = latest_price(prices, t)
     candidates = [t for t in CANDIDATES if t not in holdings and price_of.get(t)]
 
-    best = {}
+    best, tweaks = {}, {}
     for sell in sources:
         total = holdings[sell]
         for buy in candidates:
@@ -126,13 +149,7 @@ def suggest_swaps(holdings, prices, returns, cash, k=3):
                     continue
                 new[buy] = m
                 after = metrics(new, price_of, returns, invested_share)
-                gain = swap_gain(before, after, len(holdings))
-                if gain <= 0 or after["score"] < before["score"] or not visibly_better(before, after):
-                    continue
-                prev = best.get((sell, buy))
-                if prev is not None and gain <= prev[0] + TIE_GAP:
-                    continue
-                best[(sell, buy)] = (gain, {
+                swap = {
                     "sell_ticker": sell,
                     "sell_shares": n,
                     "sell_total_shares": total,
@@ -142,10 +159,21 @@ def suggest_swaps(holdings, prices, returns, cash, k=3):
                     "before": dict(before),
                     "after": after,
                     "text": swap_text(sell, n, total, buy, m),
-                })
+                    "tweak": False,
+                }
+                gain = swap_gain(before, after, len(holdings))
+                if gain > 0 and after["score"] >= before["score"] and visibly_better(before, after):
+                    prev = best.get((sell, buy))
+                    if prev is None or gain > prev[0] + TIE_GAP:
+                        best[(sell, buy)] = (gain, swap)
+                elif n < total:
+                    small = tweak_gain(before, after, len(holdings))
+                    if small is not None and small > tweaks.get((sell, buy), (0,))[0]:
+                        tweaks[(sell, buy)] = (small, {**swap, "tweak": True})
 
     picked, seen = [], set()
-    for gain, swap in sorted(best.values(), key=lambda gs: -gs[0]):
+    ranked = sorted(best.values(), key=lambda gs: -gs[0]) + sorted(tweaks.values(), key=lambda gs: -gs[0])
+    for gain, swap in ranked:
         if swap["buy_ticker"] in seen:
             continue
         seen.add(swap["buy_ticker"])

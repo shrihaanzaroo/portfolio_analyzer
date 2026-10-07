@@ -80,7 +80,7 @@ def build_html(d):
     for i, s in enumerate(d["scenarios"], 1):
         b, a = s["before"], s["after"]
         parts.append(
-            f"<div class='card'><p><b>Scenario {i}: {escape(s['text'])}</b></p><p class='small'>{escape(s['why'])}</p><table>"
+            f"<div class='card'><p><b>Scenario {i}{' (smaller tweak)' if s.get('tweak') else ''}: {escape(s['text'])}</b></p><p class='small'>{escape(s['why'])}</p><table>"
             "<tr><th></th><th class='num'>Now</th><th class='num'>In this scenario</th></tr>"
             + rows([("Grade", b["grade"], a["grade"]), ("Real bets", f"{b['true_bets']:.1f}", f"{a['true_bets']:.1f}"),
                     ("Typical yearly swing", pct(b["volatility"]), pct(a["volatility"])), ("Worst drop", pct(b["max_drawdown"]), pct(a["max_drawdown"])),

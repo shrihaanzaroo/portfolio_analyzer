@@ -64,7 +64,7 @@ METHOD = [
     ("Moving together.", "Correlation of daily returns between each pair of holdings — a standard statistic from -1 to 1. Holdings that barely move (such as cash-like funds) are left out."),
     ("Real bets.", "This app's own estimate, not an industry standard: the equal-sized-holdings number divided by (1 + (that number - 1) x the average correlation). With no correlation it equals the number of holdings; as holdings move together it falls toward 1. Companies inside the same fund are assumed to move together with a correlation of 0.35, a typical long-run figure for large companies, because a fund's insides cannot be measured from its price."),
     ("The grade.", "An average of six checks, each scored 0 to 4: spread across companies, across industries, across countries, swings compared with the S&P 500, share of months that ended positive, and near-duplicate holdings. Being all in stocks is not marked down on its own; bonds and gold still help through the swings check. It is discounted when most of the money sits in cash. The cut-offs are judgment calls."),
-    ("Scenarios.", "About 100 hypothetical swaps are tried: half or all of each of your five largest holdings, into each of ten common diversifiers (bond, gold, broad-market, international, and steady-industry holdings). Each new mix is re-graded the same way over the same 3 years, and the three that change the most are shown."),
+    ("Scenarios.", "About 100 hypothetical swaps are tried: half or all of each of your five largest holdings, into each of ten common diversifiers (bond, gold, broad-market, international, and steady-industry holdings). Each new mix is re-graded the same way over the same 3 years, and the three that change the most are shown. A swap counts only if it raises the grade or adds at least half a real bet; when fewer than three do, the rest are smaller tweaks: half of one holding, the grade and real bets not lower, and the yearly swing, worst drop or real bets visibly better."),
     ("Tested on.", "Six large tech stocks grade C (about 2 real bets, one industry). An S&P 500 fund with bonds, gold and stocks from other industries grades A (just at the cut-off), and more firmly A once an international fund is added. A single stock is capped at D. A single total-market index fund grades B: many companies, but one country. Three overlapping U.S. stock funds grade B but count as about 1.3 real bets."),
     ("Limits.", "Everything here looks backward: it describes how this mix behaved, not how it will. Three years is a short sample, and holdings tend to move together more in a crash than in calm years. Country and fund breadth figures are approximate. Taxes, fees and trading costs are ignored. This is an educational tool, not financial advice."),
 ]
@@ -400,10 +400,12 @@ else:
     st.subheader("What-if scenarios")
     st.info("These are hypothetical educational scenarios, not recommendations to buy or sell. They show how historical risk and diversification would have changed under a different mix.")
     swaps = cached_swaps(tuple(sorted(holdings.items())), cash, GRADE_YEARS)
+    if any(s.get("tweak") for s in swaps):
+        st.caption("Smaller tweaks keep your grade where it is but make at least one number below better — useful when a mix already grades well.")
     for i, swap in enumerate(swaps, 1):
         with st.container(border=True):
             head, grade_col = st.columns([4, 1])
-            head.caption(f"SCENARIO {i}")
+            head.caption(f"SCENARIO {i} · SMALLER TWEAK" if swap.get("tweak") else f"SCENARIO {i}")
             head.markdown(f"### {swap['text']}")
             head.write(swap["why"])
             grade_col.caption("Grade")
@@ -414,7 +416,7 @@ else:
         st.write("No single swap from the tested list would have clearly improved this mix — that's a good sign.")
     elif not swaps:
         st.write("No single swap from the tested list would have clearly improved this mix. The notes above explain what is holding the grade down.")
-    st.caption(f"Each scenario swaps part or all of one large holding for one of ten common diversifiers, then re-grades the mix over the last {GRADE_YEARS} years; the three that change the most are shown. Typical yearly swing = how much a normal year moves this mix up or down. Worst drop = the biggest fall from a high point before it recovered. A steadier mix usually earns a bit less per year — that trade-off is the point. Share counts use today's prices and are rounded.")
+    st.caption(f"Each scenario swaps part or all of one large holding for one of ten common diversifiers, then re-grades the mix over the last {GRADE_YEARS} years; the ones that change the most are shown, topped up with smaller tweaks when fewer than three clearly raise the grade or real bets. Typical yearly swing = how much a normal year moves this mix up or down. Worst drop = the biggest fall from a high point before it recovered. A steadier mix usually earns a bit less per year — that trade-off is the point. Share counts use today's prices and are rounded.")
 
     st.divider()
     st.subheader("How it has grown")
