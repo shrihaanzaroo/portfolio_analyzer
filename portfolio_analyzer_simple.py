@@ -7,6 +7,7 @@ import brokerage_csv
 import engine
 import funds
 import history
+import llm_csv
 import optimizer
 import regions
 import report
@@ -79,6 +80,48 @@ def holdings_df_to_dict(df):
             continue
         holdings[ticker] = holdings.get(ticker, 0) + float(shares)
     return {t: int(s) if s.is_integer() else round(s, 4) for t, s in holdings.items()}
+
+
+def read_brokerage_file(data, use_ai):
+    parsed, problem = None, None
+    try:
+        parsed = brokerage_csv.parse(data)
+    except ValueError as e:
+        problem = str(e)
+    if llm_csv.available() and (use_ai or parsed is None or parsed["skipped"]):
+        try:
+            with st.spinner("Reading your file with AI..."):
+                return llm_csv.parse(data), None
+        except ValueError as e:
+            problem = f"The AI reader didn't work: {e}" if parsed is None else f"The AI reader didn't work ({e}), so the standard reader was used."
+    return parsed, problem
+
+
+def add_dollar_holdings(df, funds_list, amounts):
+    wanted = {}
+    for fund, dollars in zip(funds_list, amounts):
+        if dollars > 0:
+            wanted[fund["ticker"]] = wanted.get(fund["ticker"], 0.0) + dollars
+    if not wanted:
+        return df, []
+    latest = cached_download(list(wanted), "1mo")
+    df = df.copy()
+    added, missing = [], []
+    for t, dollars in wanted.items():
+        if t not in latest.columns or latest[t].dropna().empty:
+            missing.append(t)
+            continue
+        shares = round(dollars / float(latest[t].dropna().iloc[-1]), 2)
+        match = df["Ticker"].astype(str).str.strip().str.upper() == t
+        if match.any():
+            df.loc[match.idxmax(), "Shares"] = float(df.loc[match.idxmax(), "Shares"] or 0) + shares
+        else:
+            df = pd.concat([df, pd.DataFrame({"Ticker": [t], "Shares": [shares]})], ignore_index=True)
+        added.append(f"{t} (${dollars:,.0f})")
+    notes = [f"Added {', '.join(added)}, worked out from today's price."] if added else []
+    if missing:
+        notes.append(f"Couldn't get a price for {', '.join(missing)}, so they were left out.")
+    return df, notes
 
 
 def holdings_to_weights(holdings, prices):
@@ -277,13 +320,18 @@ with st.container(border=True):
 
     with st.expander("Or upload a file from your brokerage (Fidelity, Schwab, Robinhood, Vanguard…)"):
         uploaded = st.file_uploader("CSV file", type=["csv"], help="Export the Positions or Holdings page as a CSV. For Robinhood, use the account activity report.")
+        use_ai = False
+        if llm_csv.available():
+            ai_config = llm_csv.config()
+            use_ai = st.checkbox("Use AI to read this file", help="An open AI model reads the file. Good for 401(k), 529 and other unusual exports. It is also used automatically when the standard reader can't match every line.")
+            where = "runs on this computer" if llm_csv.is_local(ai_config) else f"file contents are sent to {llm_csv.host(ai_config)}"
+            st.caption(f"AI model: {ai_config['model']} — {where}.")
         if uploaded is not None:
-            file_key = f"{uploaded.name}:{uploaded.size}"
+            file_key = f"{uploaded.name}:{uploaded.size}:{use_ai}"
             if st.session_state.get("csv_applied") != file_key:
-                try:
-                    parsed = brokerage_csv.parse(uploaded.getvalue())
-                except ValueError as e:
-                    st.error(str(e))
+                parsed, problem = read_brokerage_file(uploaded.getvalue(), use_ai)
+                if parsed is None:
+                    st.error(problem)
                 else:
                     shares = dict(parsed["shares"])
                     if parsed["value_only"]:
@@ -295,12 +343,38 @@ with st.container(border=True):
                     if parsed["cash"] > 0:
                         st.session_state.cash = float(parsed["cash"])
                     st.session_state.csv_applied = file_key
-                    st.session_state.csv_notes = parsed["notes"]
+                    st.session_state.csv_notes = ([problem] if problem else []) + parsed["notes"]
+                    st.session_state.csv_needs_value = parsed.get("needs_value") or None
                     st.rerun()
             if st.session_state.get("csv_notes") is not None:
                 st.success("Loaded your holdings from the file. Check them above, then tap Analyze.")
                 for note in st.session_state.csv_notes:
                     st.caption(note)
+
+    pending = st.session_state.get("csv_needs_value")
+    if pending:
+        with st.form("needs_value"):
+            st.markdown("**Some funds in your file have no ticker** — common in 401(k) and 529 plans. Enter what each is worth today (it's on your statement) and it will be analyzed as a similar public fund. Leave 0 to skip one.")
+            amounts = []
+            for i, fund in enumerate(pending):
+                units = f"{fund['units']:,.2f} units, " if fund.get("units") else ""
+                amounts.append(st.number_input(
+                    f"{fund['label']} ({units}analyzed as {fund['ticker']}) — value ($)",
+                    min_value=0.0, value=float(fund.get("value") or 0.0), step=100.0,
+                    key=f"needs_value_{i}", help=fund.get("why") or None,
+                ))
+            add_col, skip_col = st.columns(2)
+            add_funds = add_col.form_submit_button("Add these funds", type="primary", use_container_width=True)
+            skip_funds = skip_col.form_submit_button("Leave them out", use_container_width=True)
+        if add_funds or skip_funds:
+            notes = list(st.session_state.get("csv_notes") or [])
+            if add_funds:
+                holdings_df, added_notes = add_dollar_holdings(holdings_df, pending, amounts)
+                st.session_state.holdings_df = holdings_df
+                notes += added_notes
+            st.session_state.csv_notes = notes
+            st.session_state.csv_needs_value = None
+            st.rerun()
 
     if not analyzed:
         st.subheader("Step 2 — Analyze")

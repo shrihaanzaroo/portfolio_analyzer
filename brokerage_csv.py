@@ -13,7 +13,7 @@ CASH_SYMBOLS = {"SPAXX", "FDRXX", "FZFXX", "FCASH", "FDLXX", "SWVXX", "SNVXX", "
 BUY_CODES = {"buy", "bought", "reinvest", "reinvestment", "byo"}
 SELL_CODES = {"sell", "sold", "sto"}
 TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,6}$")
-MAX_POSITIONS = 12
+MAX_POSITIONS = 30
 
 
 def _clean(cell):
@@ -80,6 +80,17 @@ def _is_cash(symbol, description):
     return any(word in text for word in CASH_WORDS)
 
 
+def trim(shares, value_only, values, limit=MAX_POSITIONS):
+    if len(shares) + len(value_only) <= limit:
+        return shares, value_only, None
+    ranked = sorted(list(shares) + list(value_only), key=lambda t: -(values.get(t) or 0))
+    keep = set(ranked[:limit])
+    dropped = [t for t in ranked if t not in keep]
+    shares = {t: q for t, q in shares.items() if t in keep}
+    value_only = {t: v for t, v in value_only.items() if t in keep}
+    return shares, value_only, f"Kept your {limit} largest positions and left out {len(dropped)} smaller ones ({', '.join(dropped[:6])}{'…' if len(dropped) > 6 else ''})."
+
+
 def parse(data):
     text = _decode(data)
     rows = _rows(text)
@@ -114,6 +125,8 @@ def parse(data):
         if _is_cash(symbol, description) or (not symbol and val):
             if val:
                 cash += val
+            elif val_i is None and qty:
+                cash += qty
             continue
         if not symbol:
             continue
@@ -147,19 +160,14 @@ def parse(data):
     if not shares and not value_only:
         raise ValueError("The file was read, but no stock or fund positions were found in it.")
 
-    positions = len(shares) + len(value_only)
-    if positions > MAX_POSITIONS:
-        ranked = sorted(list(shares) + list(value_only), key=lambda t: -(values.get(t) or 0))
-        keep = set(ranked[:MAX_POSITIONS])
-        dropped = [t for t in ranked if t not in keep]
-        shares = {t: q for t, q in shares.items() if t in keep}
-        value_only = {t: v for t, v in value_only.items() if t in keep}
-        notes.append(f"Kept your {MAX_POSITIONS} largest positions and left out {len(dropped)} smaller ones ({', '.join(dropped[:6])}{'…' if len(dropped) > 6 else ''}).")
+    shares, value_only, trim_note = trim(shares, value_only, values)
+    if trim_note:
+        notes.append(trim_note)
     if skipped:
         notes.append(f"Skipped {len(skipped)} line(s) that aren't stocks or funds (options, CUSIPs, or totals): {', '.join(skipped[:5])}{'…' if len(skipped) > 5 else ''}.")
-    if cash:
+    if cash > 0:
         notes.append(f"Found ${cash:,.0f} of cash and money-market funds — put it in the Cash box.")
     if value_only:
         notes.append(f"{', '.join(value_only)}: the file had dollar values but no share counts, so shares were worked out from today's price.")
 
-    return {"shares": shares, "value_only": value_only, "cash": round(cash, 2), "notes": notes, "source": source}
+    return {"shares": shares, "value_only": value_only, "cash": round(max(cash, 0.0), 2), "notes": notes, "source": source, "skipped": skipped}
