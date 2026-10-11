@@ -17,7 +17,7 @@ Any OpenAI-compatible endpoint works. Settings come from Streamlit secrets or en
 |---|---|---|
 | `LLM_API_KEY` | none | Required for hosted services. Without it the AI option is hidden. |
 | `LLM_BASE_URL` | `https://api.groq.com/openai/v1` | e.g. `http://localhost:11434/v1` for Ollama, `https://openrouter.ai/api/v1`, `https://router.huggingface.co/v1` |
-| `LLM_MODEL` | `qwen/qwen3-32b` | Any model the service offers, e.g. `qwen2.5:14b` on Ollama |
+| `LLM_MODEL` | `qwen/qwen3-32b` | Any model the service offers, e.g. `qwen2.5:14b` on Ollama. If the service doesn't have it, the app picks one from the service's model list (Qwen first, then Llama, GPT-OSS…). |
 
 **Streamlit Community Cloud:** Cloud apps can't run a model themselves. Get a free key at [console.groq.com](https://console.groq.com) and add it under the app's **Settings → Secrets**:
 
