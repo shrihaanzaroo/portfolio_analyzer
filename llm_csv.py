@@ -7,7 +7,8 @@ import brokerage_csv
 
 DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_MODEL = "qwen/qwen3-32b"
-FALLBACK_MODEL = "llama-3.3-70b-versatile"
+PREFERRED_MODELS = ("qwen", "llama-4", "llama-3.3", "gpt-oss", "kimi", "llama", "deepseek", "mistral", "gemma")
+NON_CHAT_WORDS = ("whisper", "tts", "guard", "embed", "audio", "speech", "orpheus", "playai", "moderation", "compound")
 MAX_LINES = 300
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"}
 NUMBER_RE = re.compile(r"\(?-?\$?\d[\d,]*(?:\.\d+)?\)?|\(?-?\$?\.\d+\)?")
@@ -90,6 +91,23 @@ def _extract_json(content):
     return json.loads(content[start:end + 1])
 
 
+def _chat_models(client):
+    try:
+        ids = [m.id for m in client.models.list()]
+    except Exception:
+        return []
+    return sorted(i for i in ids if not any(word in i.lower() for word in NON_CHAT_WORDS))
+
+
+def _best_model(offered, avoid=()):
+    usable = [m for m in offered if m not in avoid]
+    for wanted in PREFERRED_MODELS:
+        for m in usable:
+            if wanted in m.lower():
+                return m
+    return usable[0] if usable else None
+
+
 def _ask(text, cfg):
     import openai
     client = openai.OpenAI(base_url=cfg["base_url"], api_key=cfg["api_key"] or "none", timeout=90, max_retries=1)
@@ -104,9 +122,11 @@ def _ask(text, cfg):
         try:
             content = _complete(client, model, messages)
         except openai.NotFoundError:
-            if model != DEFAULT_MODEL:
-                raise
-            model = FALLBACK_MODEL
+            offered = _chat_models(client)
+            replacement = _best_model(offered, avoid={model})
+            if not replacement:
+                raise ValueError(f"The AI service doesn't have the model '{model}'" + (f". It offers: {', '.join(offered[:8])}. Set LLM_MODEL to one of them." if offered else ". Set LLM_MODEL to one it offers."))
+            model = replacement
             content = _complete(client, model, messages)
         try:
             return _extract_json(content), model
@@ -223,6 +243,8 @@ def parse(data):
     shares, value_only, trim_note = brokerage_csv.trim(shares, value_only, values, brokerage_csv.MAX_POSITIONS - len(needs_value))
     if trim_note:
         notes.append(trim_note)
+    if model != cfg["model"]:
+        notes.append(f"Read with the AI model {model}, because the service doesn't offer {cfg['model']}.")
     if truncated:
         notes.append(f"The file was long, so only its first {MAX_LINES} lines were read.")
     if unverified:
