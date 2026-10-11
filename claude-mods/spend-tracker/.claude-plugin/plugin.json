@@ -1,0 +1,6 @@
+{
+  "name": "spend-tracker",
+  "version": "0.1.0",
+  "description": "Running dollar total of Claude spend across every session and subagent, with a status line and /spend",
+  "types": "./types/index.d.ts"
+}
