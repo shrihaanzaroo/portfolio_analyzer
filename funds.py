@@ -1,4 +1,6 @@
 import re
+import threading
+import time
 
 import yfinance as yf
 
@@ -70,8 +72,10 @@ def _key(text):
 STOCK_SECTORS = {**{_key(k): v for k, v in SECTOR_NAMES.items()}, **{_key(s): s for s in ref.EQUITY_SECTORS}}
 
 _cache = {}
-# stocks whose sector/country were added to ref.SECTOR_MAP / regions.COUNTRY_OVERRIDES while the app runs, and where that came from
+# stocks whose sector/country were added to ref.SECTOR_MAP / regions.COUNTRY_OVERRIDES while the app runs, and where that came from;
+# AI entries also keep "at" (time.time() when added) and "added" (which of "sector"/"country" the AI itself inserted) so they can expire
 STOCK_INFO = {}
+_lock = threading.RLock()  # app sessions run in threads and share these maps
 
 
 def breadth_for(category):
@@ -200,7 +204,7 @@ def register(tickers):
     """Looks up tickers the app doesn't know. Returns {"funds": {ticker: fund entry}, "stocks": {ticker: {"sector", "country"}}}."""
     found, stocks = {}, {}
     for t in tickers:
-        if t in ref.SECTOR_MAP:
+        if t in ref.SECTOR_MAP and estimated_by(t) != "ai":
             continue
         if t in ref.FUND_SPEC:
             found[t] = ref.FUND_SPEC[t]
@@ -209,7 +213,8 @@ def register(tickers):
             entry = fetch(t)
             if entry is None:
                 entry = from_table(t) if t in COMMON_FUNDS else None
-            else:
+            elif not (entry and entry.get("kind") == "stock" and not entry["sector"]):
+                # a stock Yahoo lists no sector for isn't kept, so Yahoo is asked again next time
                 _cache[t] = entry
         else:
             entry = _cache[t]
@@ -228,21 +233,72 @@ def apply(entries):
 
 
 def apply_stocks(stocks, source="yahoo"):
-    """Records each stock's sector and country for the whole app. Never replaces a sector or country already known."""
-    for t, item in stocks.items():
-        if t in ref.FUND_SPEC or t in ref.SECTOR_MAP:
-            continue
-        sector = item.get("sector")
-        country = plain_country(item.get("country"))
-        if sector not in ref.EQUITY_SECTORS:
-            if source != "yahoo":
+    """Records each stock's sector and country for the whole app. Never replaces a sector or country already known,
+    except that Yahoo replaces what the AI estimated."""
+    with _lock:
+        for t, item in list(stocks.items()):
+            _apply_stock(t, item, source)
+
+
+def _apply_stock(t, item, source):
+    if t in ref.FUND_SPEC:
+        return
+    sector = item.get("sector")
+    country = plain_country(item.get("country"))
+    if sector not in ref.EQUITY_SECTORS:
+        if source != "yahoo":
+            return
+        sector = None
+    known = STOCK_INFO.get(t)
+    if known and known.get("source") == "ai" and t in ref.SECTOR_MAP:
+        if source == "yahoo":
+            _replace_ai(t, known, sector, country)
+        return
+    if t in ref.SECTOR_MAP:
+        return
+    added = []
+    if country and t not in regions.COUNTRY_OVERRIDES:
+        regions.COUNTRY_OVERRIDES[t] = country
+        added.append("country")
+    if sector:
+        info = {"sector": sector, "country": country, "source": source}
+        if source == "ai":
+            info.update({"at": time.time(), "added": ["sector"] + added})
+        STOCK_INFO[t] = info
+        ref.SECTOR_MAP[t] = sector
+
+
+def _replace_ai(t, known, sector, country):
+    """Yahoo's answer wins over the AI's: its country replaces one the AI added, and its sector makes the entry Yahoo's
+    (an AI-added country Yahoo has nothing to replace with is then dropped, as if Yahoo had answered first)."""
+    added = list(known.get("added") or [])
+    if country and "country" in added:
+        regions.COUNTRY_OVERRIDES[t] = country
+        added.remove("country")
+    elif country:
+        regions.COUNTRY_OVERRIDES.setdefault(t, country)
+    if sector:
+        if "country" in added and regions.COUNTRY_OVERRIDES.get(t) == known.get("country"):
+            regions.COUNTRY_OVERRIDES.pop(t, None)
+        ref.SECTOR_MAP[t] = sector
+        STOCK_INFO[t] = {"sector": sector, "country": country, "source": "yahoo"}
+    elif added != (known.get("added") or []):
+        STOCK_INFO[t] = {**known, "country": country, "added": added}
+
+
+def expire_ai(max_age=86400):
+    """Forgets AI estimates older than max_age seconds, removing only the sector/country entries the AI itself added."""
+    now = time.time()
+    with _lock:
+        for t, info in list(STOCK_INFO.items()):
+            if info.get("source") != "ai" or now - info.get("at", 0) < max_age:
                 continue
-            sector = None
-        if country:
-            regions.COUNTRY_OVERRIDES.setdefault(t, country)
-        if sector:
-            STOCK_INFO.setdefault(t, {"sector": sector, "country": country, "source": source})
-            ref.SECTOR_MAP.setdefault(t, sector)
+            added = info.get("added") or []
+            if "sector" in added and ref.SECTOR_MAP.get(t) == info.get("sector"):
+                ref.SECTOR_MAP.pop(t, None)
+            if "country" in added and regions.COUNTRY_OVERRIDES.get(t) == info.get("country"):
+                regions.COUNTRY_OVERRIDES.pop(t, None)
+            STOCK_INFO.pop(t, None)
 
 
 def estimated_by(ticker):

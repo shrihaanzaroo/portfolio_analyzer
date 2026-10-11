@@ -179,22 +179,31 @@ def cached_funds(tickers):
     return funds.register(list(tickers))
 
 
+AI_CLASSIFY_LIMIT = 30  # most tickers sent to the AI in one call
+
+
 @st.cache_data(show_spinner="Looking up industries...", ttl=86400)
 def cached_classify(tickers):
     return llm_csv.classify_stocks(list(tickers))
 
 
 def look_up_holdings(tickers):
+    funds.expire_ai()
     looked_up = cached_funds(tuple(tickers))
     funds.apply(looked_up["funds"])
     funds.apply_stocks(looked_up["stocks"])
-    unknown = funds.unknown_sector(tickers)
-    if unknown and llm_csv.available():
+    st.session_state.fund_info = looked_up["funds"]
+
+
+def classify_unknown(tickers, prices):
+    """Asks the AI for the sectors Yahoo didn't list, only for tickers that have real prices to grade."""
+    recent = history.window(prices, GRADE_YEARS)
+    priced = [t for t in funds.unknown_sector(tickers) if t in recent.columns and not recent[t].dropna().empty]
+    if priced and llm_csv.available():
         try:
-            funds.apply_stocks(cached_classify(tuple(sorted(unknown))), source="ai")
+            funds.apply_stocks(cached_classify(tuple(sorted(priced)[:AI_CLASSIFY_LIMIT])), source="ai")
         except Exception:
             pass
-    st.session_state.fund_info = looked_up["funds"]
     st.session_state.ai_sectors = [t for t in tickers if funds.estimated_by(t) == "ai"]
     st.session_state.unknown_sectors = funds.unknown_sector(tickers)
 
@@ -444,6 +453,7 @@ with st.container(border=True):
             look_up_holdings(tickers)
             prices = cached_download(download_list(tickers), PERIOD)
         st.session_state.analyze_notes = analyze_notes
+        classify_unknown(tickers, prices)
 
         st.session_state.holdings = holdings
         st.session_state.prices = prices
