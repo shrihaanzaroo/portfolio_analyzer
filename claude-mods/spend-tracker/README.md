@@ -2,7 +2,7 @@
 
 A Claude Code mod that keeps a running dollar total of what you've spent on Claude Code, across every session (chats, `/clear`s, resumes) and every agent/subagent.
 
-- Status line under the prompt: `Claude spend: $X this session · $Y all-time`
+- Status line under the prompt: `spend $X · $Y total` (this session, then all-time)
 - `/spend` — all-time total, session count, this session's cost, last 10 sessions
 - `/spend import` — add sessions from before the tracker was installed (reads Claude Code's saved transcripts, subagents included; safe to run again)
 - `/spend reset` — clear the history
