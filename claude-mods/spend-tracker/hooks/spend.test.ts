@@ -1,5 +1,13 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+const spend = (args = '') => ({
+  command: 'spend',
+  args,
+  origin: { kind: 'composer' as const },
+  presentation: { isFullscreen: false, columns: 80 },
+})
+
+
 const context = { window: 200000 }
 
 test('totals spend across sessions and survives a restarted ledger', async ($, on) => {
@@ -31,13 +39,13 @@ test('totals spend across sessions and survives a restarted ledger', async ($, o
   await measure(0.5)
   expect(statuses.at(-1)).toBe('Claude spend: $0.5000 this session · $7.5000 all-time')
 
-  const report = await $.command.run({ command: 'spend' })
+  const report = await $.command.run(spend())
   expect(report.text).toContain('All-time Claude spend: $7.5000 across 3 session(s)')
   expect(report.text).toContain('This session (incl. subagents): $0.5000')
 
-  const cleared = await $.command.run({ command: 'spend', args: 'reset' })
+  const cleared = await $.command.run(spend('reset'))
   expect(cleared.text).toBe('Claude spend history cleared.')
-  const empty = await $.command.run({ command: 'spend' })
+  const empty = await $.command.run(spend())
   expect(empty.text).toContain('$0.0000 across 0 session(s)')
 })
 
