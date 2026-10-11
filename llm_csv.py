@@ -10,13 +10,14 @@ DEFAULT_MODEL = "qwen/qwen3-32b"
 PREFERRED_MODELS = ("qwen", "llama-4", "llama-3.3", "gpt-oss", "kimi", "llama", "deepseek", "mistral", "gemma")
 NON_CHAT_WORDS = ("whisper", "tts", "guard", "embed", "audio", "speech", "orpheus", "playai", "moderation", "compound")
 MAX_LINES = 300
+MIN_UNIT_PRICE, MAX_UNIT_PRICE = 0.5, 5000
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"}
 NUMBER_RE = re.compile(r"\(?-?\$?\d[\d,]*(?:\.\d+)?\)?|\(?-?\$?\.\d+\)?")
 
 SYSTEM_PROMPT = """You read brokerage holdings exports (CSV) and list every position in them as JSON.
 
 Reply with ONLY a JSON object of this exact shape, no other text:
-{"positions": [{"raw_symbol": str, "description": str, "kind": "stock"|"etf"|"mutual_fund"|"cash"|"no_ticker_fund"|"other", "ticker": str|null, "proxy_ticker": str|null, "quantity": number|null, "market_value": number|null, "note": str|null}], "notes": [str]}
+{"positions": [{"raw_symbol": str, "description": str, "kind": "stock"|"etf"|"mutual_fund"|"cash"|"no_ticker_fund"|"other", "ticker": str|null, "proxy_ticker": str|null, "quantity": number|null, "market_value": number|null, "unit_price": number|null, "note": str|null}], "notes": [str]}
 
 Rules:
 - One entry per data row. Do not merge rows and do not skip rows; skip only headers, blank lines and account totals.
@@ -24,6 +25,7 @@ Rules:
 - ticker: the Yahoo Finance ticker. Remove broker marks such as "@", "*" or trailing spaces (e.g. "NFLX@" -> "NFLX").
 - kind "cash": cash, sweep, core position and money-market funds (SPAXX, FDRXX, FZFXX, FCASH, SWVXX, VMFXX, "Cash"...). They are worth $1 per unit.
 - kind "no_ticker_fund": a fund with no public ticker, such as 401(k) collective trusts, 529 portfolios and plan-only index funds. Give the closest liquid proxy_ticker:
+  Also give unit_price: your best estimate of that fund's current price per unit in US dollars, from what you know about the fund or its share classes (null for other kinds, or if you truly can't tell). Plan trust and 529 units are often priced well away from the proxy's share price.
   US bond / aggregate bond index -> BND; developed ex-US / international index -> VEA; emerging markets -> VWO; US extended market / small-mid cap index -> VXF; S&P 500 or large-cap equity index -> VOO; total US stock market -> VTI; target-date or "Portfolio 20XX" -> the Vanguard Target Retirement fund for the nearest year (2025 VTTVX, 2030 VTHRX, 2035 VTTHX, 2040 VFORX, 2045 VTIVX, 2050 VFIFX, 2055 VFFVX, 2060 VTTSX, 2065 VLXVX); stable value -> treat as kind "cash".
 - kind "other": options, CUSIP-only bonds, or anything you cannot identify. Explain in note.
 - notes: short, plain-English remarks about anything unusual in the file (at most 4)."""
@@ -35,9 +37,9 @@ SS US BOND INDEX,,900"""
 
 EXAMPLE_JSON = json.dumps({
     "positions": [
-        {"raw_symbol": "VOO*", "description": "VANGUARD S&P 500 ETF", "kind": "etf", "ticker": "VOO", "proxy_ticker": None, "quantity": 1250.5, "market_value": None, "note": None},
-        {"raw_symbol": "SPAXX", "description": "FIDELITY GOVERNMENT MONEY MARKET", "kind": "cash", "ticker": None, "proxy_ticker": None, "quantity": -42.10, "market_value": None, "note": None},
-        {"raw_symbol": "SS US BOND INDEX", "description": "", "kind": "no_ticker_fund", "ticker": None, "proxy_ticker": "BND", "quantity": 900, "market_value": None, "note": "State Street US bond index trust; no public ticker."},
+        {"raw_symbol": "VOO*", "description": "VANGUARD S&P 500 ETF", "kind": "etf", "ticker": "VOO", "proxy_ticker": None, "quantity": 1250.5, "market_value": None, "unit_price": None, "note": None},
+        {"raw_symbol": "SPAXX", "description": "FIDELITY GOVERNMENT MONEY MARKET", "kind": "cash", "ticker": None, "proxy_ticker": None, "quantity": -42.10, "market_value": None, "unit_price": None, "note": None},
+        {"raw_symbol": "SS US BOND INDEX", "description": "", "kind": "no_ticker_fund", "ticker": None, "proxy_ticker": "BND", "quantity": 900, "market_value": None, "unit_price": 14.2, "note": "State Street US bond index trust; no public ticker."},
     ],
     "notes": ["The file has share counts but no dollar values."],
 })
@@ -196,7 +198,7 @@ def parse(data):
         raise ValueError("The AI model didn't return a list of positions. Try again, or type your holdings in by hand.")
 
     numbers = _numbers_in(text)
-    shares, values, needs_value = {}, {}, []
+    shares, values, estimated_funds = {}, {}, []
     cash = 0.0
     skipped, unverified, row_notes = [], [], []
 
@@ -217,7 +219,12 @@ def parse(data):
         note = str(p.get("note") or "").strip()
         if kind == "no_ticker_fund" or (not ticker and proxy):
             if proxy and ((qty or 0) > 0 or (val or 0) > 0):
-                needs_value.append({"label": label, "ticker": proxy, "units": qty, "value": val if (val or 0) > 0 else None, "why": note})
+                unit_price = _num(p.get("unit_price"))
+                estimated_funds.append({
+                    "label": label, "ticker": proxy, "units": qty, "why": note,
+                    "value": val if (val or 0) > 0 else None,
+                    "unit_price": unit_price if unit_price and MIN_UNIT_PRICE <= unit_price <= MAX_UNIT_PRICE else None,
+                })
             else:
                 skipped.append(label)
             continue
@@ -236,11 +243,11 @@ def parse(data):
 
     shares = {t: round(q, 4) for t, q in shares.items() if q > 0}
     value_only = {t: v for t, v in values.items() if t not in shares and v > 0}
-    if not shares and not value_only and not needs_value:
+    if not shares and not value_only and not estimated_funds:
         raise ValueError("The AI model read the file but found no stock or fund positions in it.")
 
     notes = [str(n) for n in (reply.get("notes") or []) if isinstance(n, str) and n.strip()][:4]
-    shares, value_only, trim_note = brokerage_csv.trim(shares, value_only, values, brokerage_csv.MAX_POSITIONS - len(needs_value))
+    shares, value_only, trim_note = brokerage_csv.trim(shares, value_only, values, brokerage_csv.MAX_POSITIONS - len(estimated_funds))
     if trim_note:
         notes.append(trim_note)
     if model != cfg["model"]:
@@ -264,5 +271,5 @@ def parse(data):
         "notes": notes,
         "source": f"AI ({model})",
         "skipped": skipped,
-        "needs_value": needs_value,
+        "estimated_funds": estimated_funds,
     }
