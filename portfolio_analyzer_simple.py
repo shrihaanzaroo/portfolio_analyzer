@@ -126,10 +126,34 @@ def add_estimated_funds(df, funds_list):
         added.append(f"{fund['label']} ≈ ${dollars:,.0f} ({basis}), counted as {t}")
     notes = []
     if added:
-        notes.append("Funds with no ticker were estimated and added as a similar public fund: " + "; ".join(added) + ". These are estimates — if your statement shows different values, change their shares in the table.")
+        notes.append("Estimated and added as a similar public fund (these have no ticker, or no price data on Yahoo Finance): " + "; ".join(added) + ". These are estimates — if your statement shows different values, change their shares in the table.")
     if missing:
         notes.append(f"Couldn't estimate {', '.join(missing)}, so they were left out.")
     return df, notes
+
+
+def replace_unpriced(df, holdings, missing):
+    keep = ~df["Ticker"].astype(str).str.strip().str.upper().isin(missing)
+    df = df[keep].reset_index(drop=True)
+    notes = []
+    if llm_csv.available():
+        try:
+            with st.spinner(f"Finding stand-ins for {', '.join(missing)}..."):
+                estimates = llm_csv.estimate_funds([{"label": t, "units": holdings[t]} for t in missing])
+            df, notes = add_estimated_funds(df, estimates)
+        except ValueError as e:
+            notes = [f"The AI couldn't suggest stand-ins ({e})."]
+    holdings = holdings_df_to_dict(df)
+    prices = cached_download(download_list(list(holdings)), PERIOD) if holdings else None
+    recent = history.window(prices, GRADE_YEARS) if holdings else None
+    still = [t for t in holdings if t not in prices.columns or recent[t].dropna().empty]
+    if still:
+        df = df[~df["Ticker"].astype(str).str.strip().str.upper().isin(still)].reset_index(drop=True)
+        holdings = holdings_df_to_dict(df)
+    left_out = sorted(set(still) | {t for t in missing if not any(t in n for n in notes)})
+    if left_out:
+        notes.append(f"Left out {', '.join(left_out)}: Yahoo Finance has no recent price data for {'it' if len(left_out) == 1 else 'them'}.")
+    return df, holdings, notes
 
 
 def holdings_to_weights(holdings, prices):
@@ -380,15 +404,28 @@ with st.container(border=True):
         recent = history.window(prices, GRADE_YEARS)
 
         missing = [t for t in tickers if t not in prices.columns or recent[t].dropna().empty]
+        analyze_notes = []
         if missing:
-            st.error(f"No price data available for: {', '.join(missing)}. This can happen with a mistyped ticker, or if Yahoo Finance is busy — try again in a moment.")
-            st.stop()
+            holdings_df, holdings, analyze_notes = replace_unpriced(holdings_df, holdings, missing)
+            st.session_state.holdings_df = holdings_df
+            if not holdings:
+                st.error(f"No price data available for: {', '.join(missing)}. This can happen with a mistyped ticker, or if Yahoo Finance is busy — try again in a moment.")
+                st.stop()
+            tickers = list(holdings.keys())
+            fund_info = cached_funds(tuple(tickers))
+            funds.apply(fund_info)
+            st.session_state.fund_info = fund_info
+            prices = cached_download(download_list(tickers), PERIOD)
+        st.session_state.analyze_notes = analyze_notes
 
         st.session_state.holdings = holdings
         st.session_state.prices = prices
         st.session_state.returns = engine.compute_returns(prices)
         st.session_state.weights, st.session_state.stock_value = holdings_to_weights(holdings, prices)
         st.rerun()
+
+for note in st.session_state.get("analyze_notes") or []:
+    st.warning(note.replace("$", "\\$"))
 
 if st.session_state.weights is None:
     st.caption("Your results will appear here after you tap Analyze.")
