@@ -29,24 +29,24 @@ test('totals spend across sessions and survives a restarted ledger', async ($, o
     $.session.measure({ context, rateLimits: [], cost: { usd }, changed: ['cost'] })
 
   await measure(1.25)
-  expect(statuses.at(-1)).toBe('Claude spend: $1.2500 this session · $6.2500 all-time')
+  expect(statuses.at(-1)).toBe('spend $1.25 · $6.25 total')
 
   await measure(2)
-  expect(statuses.at(-1)).toBe('Claude spend: $2.0000 this session · $7.0000 all-time')
+  expect(statuses.at(-1)).toBe('spend $2.00 · $7.00 total')
 
   // A /clear: a new session id, its ledger from zero.
   sessionId = 'b'
   await measure(0.5)
-  expect(statuses.at(-1)).toBe('Claude spend: $0.5000 this session · $7.5000 all-time')
+  expect(statuses.at(-1)).toBe('spend $0.50 · $7.50 total')
 
   const report = await $.command.run(spend())
-  expect(report.text).toContain('All-time Claude spend: $7.5000 across 3 session(s)')
-  expect(report.text).toContain('This session (incl. subagents): $0.5000')
+  expect(report.text).toContain('All-time Claude spend: $7.50 across 3 session(s)')
+  expect(report.text).toContain('This session (incl. subagents): $0.50')
 
   const cleared = await $.command.run(spend('reset'))
   expect(cleared.text).toBe('Claude spend history cleared.')
   const empty = await $.command.run(spend())
-  expect(empty.text).toContain('$0.0000 across 0 session(s)')
+  expect(empty.text).toContain('$0.00 across 0 session(s)')
 })
 
 test('a resumed session whose ledger restarted keeps what it had', async ($, on) => {
@@ -62,5 +62,5 @@ test('a resumed session whose ledger restarted keeps what it had', async ($, on)
   on('session.measure', ($, e) => ({ changed: e.changed }))
 
   await $.session.measure({ context, rateLimits: [], cost: { usd: 0.1 }, changed: ['cost'] })
-  expect(statuses.at(-1)).toBe('Claude spend: $3.1000 this session · $3.1000 all-time')
+  expect(statuses.at(-1)).toBe('spend $3.10 · $3.10 total')
 })

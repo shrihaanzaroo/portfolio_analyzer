@@ -12,7 +12,7 @@ const PREFIX = 'session:'
 const ledger = atom({ plugin: 'spend-tracker', key: 'ledger' } as const, null)
 
 
-const money = (usd: number) => `$${usd.toFixed(usd >= 100 ? 2 : 4)}`
+const money = (usd: number) => `$${usd.toFixed(2)}`
 
 const sessions = async (keys: string[], get: (key: string) => Promise<unknown>) => {
   const rows: Array<SessionSpend & { id: string }> = []
@@ -41,7 +41,7 @@ export const register: Register = on => {
       argumentHint: '[import|reset]',
     })
     const all = total(await sessions(await $.store.keys(), key => $.store.get(key)))
-    if (all > 0) $.ui.status(`Claude spend: ${money(all)} all-time`)
+    if (all > 0) $.ui.status(`spend ${money(all)} total`)
 
     return next(e)
   })
@@ -70,7 +70,7 @@ export const register: Register = on => {
     await $.store.set(key, row)
 
     const all = total(await sessions(await $.store.keys(), key => $.store.get(key)))
-    $.ui.status(`Claude spend: ${money(row.usd)} this session · ${money(all)} all-time`)
+    $.ui.status(`spend ${money(row.usd)} · ${money(all)} total`)
 
     return next(e)
   })
@@ -132,7 +132,7 @@ export const register: Register = on => {
             skipped += 1
             continue
           }
-          $.ui.status(`Claude spend: importing ${imported + skipped + unreadable + 1}…`)
+          $.ui.status(`spend: importing ${imported + skipped + unreadable + 1}…`)
 
           const tally = newTally()
           try {
@@ -160,7 +160,7 @@ export const register: Register = on => {
       }
 
       const all = total(await sessions(await $.store.keys(), key => $.store.get(key)))
-      $.ui.status(`Claude spend: ${money(all)} all-time`)
+      $.ui.status(`spend ${money(all)} total`)
       const notes = [
         `Imported ${imported} past session(s), adding ${money(added)} at API list prices.`,
         skipped > 0 ? `${skipped} session(s) were already counted and left as they were.` : '',

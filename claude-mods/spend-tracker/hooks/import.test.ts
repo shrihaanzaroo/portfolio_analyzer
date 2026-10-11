@@ -77,9 +77,9 @@ test('/spend import adds past sessions and their subagents, once', async ($, on)
 
   const first = await $.command.run(spend('import'))
   // old: $2 (Opus 5.5 output) + $1 (Sonnet 5 subagent); live and now are skipped.
-  expect(first.text).toContain('Imported 1 past session(s), adding $3.0000')
+  expect(first.text).toContain('Imported 1 past session(s), adding $3.00')
   expect(first.text).toContain('2 session(s) were already counted')
-  expect(first.text).toContain('All-time Claude spend is now $4.0000')
+  expect(first.text).toContain('All-time Claude spend is now $4.00')
 
   const again = await $.command.run(spend('import'))
   expect(again.text).toContain('Imported 0 past session(s)')
