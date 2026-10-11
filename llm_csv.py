@@ -4,6 +4,7 @@ import re
 from urllib.parse import urlparse
 
 import brokerage_csv
+import reference_data as ref
 
 DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_MODEL = "qwen/qwen3-32b"
@@ -42,6 +43,17 @@ Reply with ONLY a JSON object of this exact shape, no other text:
 - why: one short line naming what the holding is.
 - Common stand-ins: """ + PROXY_GUIDE + """
 """
+
+CLASSIFY_PROMPT = """Yahoo Finance doesn't list an industry sector for these stock tickers. For each one, give the company's sector and the country where it is headquartered.
+
+Reply with ONLY a JSON object of this exact shape, no other text:
+{"stocks": [{"ticker": str, "sector": str|null, "country": str|null}]}
+
+- sector: exactly one of: """ + ", ".join(ref.EQUITY_SECTORS) + """.
+- country: the country's common English name, such as "United States", "Taiwan" or "Netherlands".
+- Use null for a ticker you don't recognize, or one that is a fund or ETF rather than a single company. Never guess.
+"""
+PLAIN_COUNTRY = re.compile(r"^[A-Za-z][A-Za-z .'\-]{1,39}$")
 
 EXAMPLE_CSV = """Symbol,Description,Quantity
 VOO*,VANGUARD S&P 500 ETF,"1,250.5"
@@ -311,3 +323,30 @@ def estimate_funds(items):
             "why": str(row.get("why") or "").strip(),
         })
     return estimates
+
+
+def _country(value):
+    country = str(value or "").strip()
+    return country if PLAIN_COUNTRY.match(country) and len(country.split()) <= 4 else None
+
+
+def classify_stocks(tickers):
+    """{ticker: {"sector": one of ref.EQUITY_SECTORS, "country": str or None}} for the tickers the AI could place."""
+    wanted = {str(t).strip().upper() for t in tickers if str(t).strip()}
+    if not wanted:
+        return {}
+    reply, _ = _ask([
+        {"role": "system", "content": CLASSIFY_PROMPT},
+        {"role": "user", "content": "\n".join(sorted(wanted))},
+    ], config())
+    rows = reply.get("stocks") if isinstance(reply, dict) else None
+    sectors = {s.lower(): s for s in ref.EQUITY_SECTORS}
+    found = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or "").strip().upper()
+        sector = sectors.get(str(row.get("sector") or "").strip().lower())
+        if ticker in wanted and sector:
+            found[ticker] = {"sector": sector, "country": _country(row.get("country"))}
+    return found

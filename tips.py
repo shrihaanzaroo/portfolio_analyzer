@@ -17,7 +17,7 @@ COUNT_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven",
 
 def sector_examples(max_per_sector=3):
     examples = {}
-    for ticker, sector in ref.SECTOR_MAP.items():
+    for ticker, sector in list(ref.SECTOR_MAP.items()):
         bucket = examples.setdefault(sector, [])
         if len(bucket) < max_per_sector:
             bucket.append(ticker)

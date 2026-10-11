@@ -179,6 +179,37 @@ def cached_funds(tickers):
     return funds.register(list(tickers))
 
 
+@st.cache_data(show_spinner="Looking up industries...", ttl=86400)
+def cached_classify(tickers):
+    return llm_csv.classify_stocks(list(tickers))
+
+
+def look_up_holdings(tickers):
+    looked_up = cached_funds(tuple(tickers))
+    funds.apply(looked_up["funds"])
+    funds.apply_stocks(looked_up["stocks"])
+    unknown = funds.unknown_sector(tickers)
+    if unknown and llm_csv.available():
+        try:
+            funds.apply_stocks(cached_classify(tuple(sorted(unknown))), source="ai")
+        except Exception:
+            pass
+    st.session_state.fund_info = looked_up["funds"]
+    st.session_state.ai_sectors = [t for t in tickers if funds.estimated_by(t) == "ai"]
+    st.session_state.unknown_sectors = funds.unknown_sector(tickers)
+
+
+def sector_notes():
+    notes = []
+    if st.session_state.get("ai_sectors"):
+        notes.append(f"Industry and country for {', '.join(st.session_state.ai_sectors)} were estimated by AI because Yahoo Finance didn't list them.")
+    unknown = st.session_state.get("unknown_sectors")
+    if unknown:
+        they = "it's" if len(unknown) == 1 else "they're"
+        notes.append(f"Couldn't find the industry for {', '.join(unknown)}, so {they} counted as \"Other\".")
+    return notes
+
+
 def pct(x):
     return "n/a" if x != x else f"{round(x * 100):.0f}%"
 
@@ -397,9 +428,7 @@ with st.container(border=True):
             st.stop()
 
         tickers = list(holdings.keys())
-        fund_info = cached_funds(tuple(tickers))
-        funds.apply(fund_info)
-        st.session_state.fund_info = fund_info
+        look_up_holdings(tickers)
         prices = cached_download(download_list(tickers), PERIOD)
         recent = history.window(prices, GRADE_YEARS)
 
@@ -412,9 +441,7 @@ with st.container(border=True):
                 st.error(f"No price data available for: {', '.join(missing)}. This can happen with a mistyped ticker, or if Yahoo Finance is busy — try again in a moment.")
                 st.stop()
             tickers = list(holdings.keys())
-            fund_info = cached_funds(tuple(tickers))
-            funds.apply(fund_info)
-            st.session_state.fund_info = fund_info
+            look_up_holdings(tickers)
             prices = cached_download(download_list(tickers), PERIOD)
         st.session_state.analyze_notes = analyze_notes
 
@@ -464,6 +491,8 @@ else:
         st.caption(f"Based on the last {GRADE_YEARS} years of prices ({history.date_range_text(grade_daily)}).")
     if st.session_state.get("fund_info"):
         st.caption("Looked inside your funds: " + "; ".join(funds.describe(t, e) for t, e in st.session_state.fund_info.items()) + ".")
+    for note in sector_notes():
+        st.caption(note)
 
     report_slot = st.empty()
 
@@ -735,6 +764,7 @@ else:
             "weights": sorted(weights_with_cash.items(), key=lambda kv: -kv[1]),
             "assets": regions.asset_mix(weights_with_cash), "countries": regions.country_mix(weights_with_cash), "sectors": facts["sectors"],
             "funds": [funds.describe(t, e) for t, e in (st.session_state.get("fund_info") or {}).items()],
+            "sector_notes": sector_notes(),
             "performance": [
                 ("Total return", signed_pct(mine["total_return"]), signed_pct(market["total_return"])),
                 ("Return per year", pct(mine["annual_return"]), pct(market["annual_return"])),

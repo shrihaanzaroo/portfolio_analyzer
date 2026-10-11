@@ -65,6 +65,8 @@ def build_html(d):
         parts.append("</table>")
     if d["funds"]:
         parts.append("<p class='small'><b>Funds looked inside:</b> " + escape("; ".join(d["funds"])) + "</p>")
+    for note in d.get("sector_notes") or []:
+        parts.append(f"<p class='small'>{escape(note)}</p>")
 
     parts.append("<h2>How it has behaved</h2><table><tr><th></th><th class='num'>You</th><th class='num'>S&amp;P 500</th></tr>")
     parts.append(rows(d["performance"], lambda r: [td(r[0]), td(r[1], "num"), td(r[2], "num")]))

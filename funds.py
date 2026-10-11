@@ -59,8 +59,19 @@ COMMON_FUNDS = {
     "IAU": ("iShares Gold Trust", "Commodities Focused Gold"),
 }
 STOCK_TICKER = re.compile(r"^[A-Z][A-Z.\-]{0,5}$")
+PLAIN_COUNTRY = re.compile(r"^[A-Za-z][A-Za-z .'\-]{1,39}$")
+
+
+def _key(text):
+    return re.sub(r"[^a-z]", "", str(text or "").lower())
+
+
+# Yahoo's stock sectors ("Financial Services", sectorKey "financial-services") and the app's own names, both mapped to the app's names
+STOCK_SECTORS = {**{_key(k): v for k, v in SECTOR_NAMES.items()}, **{_key(s): s for s in ref.EQUITY_SECTORS}}
 
 _cache = {}
+# stocks whose sector/country were added to ref.SECTOR_MAP / regions.COUNTRY_OVERRIDES while the app runs, and where that came from
+STOCK_INFO = {}
 
 
 def breadth_for(category):
@@ -111,8 +122,21 @@ def from_table(ticker):
     return entry
 
 
+def stock_sector(info):
+    for raw in (info.get("sector"), info.get("sectorKey")):
+        if raw and _key(raw) in STOCK_SECTORS:
+            return STOCK_SECTORS[_key(raw)]
+    return None
+
+
+def plain_country(value):
+    country = str(value or "").strip()
+    return country if PLAIN_COUNTRY.match(country) and len(country.split()) <= 4 else None
+
+
 def fetch(ticker):
-    """A fund's composition, False if Yahoo says it is not a fund, None if Yahoo could not be reached."""
+    """A fund's composition; {"kind": "stock", "sector", "country"} for a stock (either may be None);
+    False if Yahoo says it is something else; None if Yahoo could not be reached."""
     try:
         tk = yf.Ticker(ticker)
         info = tk.info or {}
@@ -120,6 +144,8 @@ def fetch(ticker):
         return None
     if not info.get("quoteType"):
         return None
+    if info.get("quoteType") == "EQUITY":
+        return {"kind": "stock", "sector": stock_sector(info), "country": plain_country(info.get("country"))}
     if info.get("quoteType") not in ("ETF", "MUTUALFUND"):
         return False
 
@@ -171,7 +197,8 @@ def fetch(ticker):
 
 
 def register(tickers):
-    found = {}
+    """Looks up tickers the app doesn't know. Returns {"funds": {ticker: fund entry}, "stocks": {ticker: {"sector", "country"}}}."""
+    found, stocks = {}, {}
     for t in tickers:
         if t in ref.SECTOR_MAP:
             continue
@@ -186,15 +213,44 @@ def register(tickers):
                 _cache[t] = entry
         else:
             entry = _cache[t]
-        if entry:
+        if entry and entry.get("kind") == "stock":
+            stocks[t] = {"sector": entry["sector"], "country": entry["country"]}
+        elif entry:
             ref.FUND_SPEC[t] = entry
             found[t] = entry
-    return found
+    apply_stocks(stocks)
+    return {"funds": found, "stocks": stocks}
 
 
 def apply(entries):
     for t, entry in entries.items():
         ref.FUND_SPEC.setdefault(t, entry)
+
+
+def apply_stocks(stocks, source="yahoo"):
+    """Records each stock's sector and country for the whole app. Never replaces a sector or country already known."""
+    for t, item in stocks.items():
+        if t in ref.FUND_SPEC or t in ref.SECTOR_MAP:
+            continue
+        sector = item.get("sector")
+        country = plain_country(item.get("country"))
+        if sector not in ref.EQUITY_SECTORS:
+            if source != "yahoo":
+                continue
+            sector = None
+        if country:
+            regions.COUNTRY_OVERRIDES.setdefault(t, country)
+        if sector:
+            STOCK_INFO.setdefault(t, {"sector": sector, "country": country, "source": source})
+            ref.SECTOR_MAP.setdefault(t, sector)
+
+
+def estimated_by(ticker):
+    return STOCK_INFO.get(ticker, {}).get("source")
+
+
+def unknown_sector(tickers):
+    return [t for t in tickers if t not in ref.FUND_SPEC and t not in ref.SECTOR_MAP]
 
 
 def describe(ticker, entry):
