@@ -9,7 +9,7 @@ streamlit run portfolio_analyzer_simple.py
 
 ## Reading brokerage files with an open AI model
 
-The CSV upload first uses a built-in reader. If that reader can't match every line, the app asks an open-weight LLM to read the file. This helps with 401(k) and 529 trust funds that have no ticker, money-market cash, broker marks like `NFLX@`, and other unusual layouts. You can also tick **Use AI to read this file** to always use the LLM. Funds with no ticker are analyzed as a similar public fund (for example, a US bond index trust as BND), and the app asks you for their dollar value.
+The CSV upload first uses a built-in reader. If that reader can't match every line, the app asks an open-weight LLM to read the file. This helps with 401(k) and 529 trust funds that have no ticker, money-market cash, broker marks like `NFLX@`, and other unusual layouts. You can also tick **Use AI to read this file** to always use the LLM. Funds with no ticker are analyzed as a similar public fund (for example, a US bond index trust as BND). Their dollar value is estimated from the units in the file and the AI's best guess of the price per unit, and you can adjust the shares in the table afterwards.
 
 Any OpenAI-compatible endpoint works. Settings come from Streamlit secrets or environment variables:
 

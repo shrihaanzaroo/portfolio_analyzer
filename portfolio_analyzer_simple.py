@@ -97,30 +97,38 @@ def read_brokerage_file(data, use_ai):
     return parsed, problem
 
 
-def add_dollar_holdings(df, funds_list, amounts):
-    wanted = {}
-    for fund, dollars in zip(funds_list, amounts):
-        if dollars > 0:
-            wanted[fund["ticker"]] = wanted.get(fund["ticker"], 0.0) + dollars
-    if not wanted:
-        return df, []
-    latest = cached_download(list(wanted), "1mo")
+def add_estimated_funds(df, funds_list):
+    latest = cached_download(sorted({f["ticker"] for f in funds_list}), "1mo")
     df = df.copy()
     added, missing = [], []
-    for t, dollars in wanted.items():
+    for fund in funds_list:
+        t = fund["ticker"]
         if t not in latest.columns or latest[t].dropna().empty:
-            missing.append(t)
+            missing.append(fund["label"])
             continue
-        shares = round(dollars / float(latest[t].dropna().iloc[-1]), 2)
+        price = float(latest[t].dropna().iloc[-1])
+        units = fund.get("units") or 0
+        if fund.get("value"):
+            dollars, basis = fund["value"], "value from the file"
+        elif units and fund.get("unit_price"):
+            dollars, basis = units * fund["unit_price"], f"{units:,.0f} units × about ${fund['unit_price']:,.2f}"
+        else:
+            dollars, basis = units * price, f"{units:,.0f} units at {t}'s price"
+        if dollars <= 0:
+            missing.append(fund["label"])
+            continue
+        shares = round(dollars / price, 2)
         match = df["Ticker"].astype(str).str.strip().str.upper() == t
         if match.any():
             df.loc[match.idxmax(), "Shares"] = float(df.loc[match.idxmax(), "Shares"] or 0) + shares
         else:
             df = pd.concat([df, pd.DataFrame({"Ticker": [t], "Shares": [shares]})], ignore_index=True)
-        added.append(f"{t} (${dollars:,.0f})")
-    notes = [f"Added {', '.join(added)}, worked out from today's price."] if added else []
+        added.append(f"{fund['label']} ≈ ${dollars:,.0f} ({basis}), counted as {t}")
+    notes = []
+    if added:
+        notes.append("Funds with no ticker were estimated and added as a similar public fund: " + "; ".join(added) + ". These are estimates — if your statement shows different values, change their shares in the table.")
     if missing:
-        notes.append(f"Couldn't get a price for {', '.join(missing)}, so they were left out.")
+        notes.append(f"Couldn't estimate {', '.join(missing)}, so they were left out.")
     return df, notes
 
 
@@ -339,42 +347,20 @@ with st.container(border=True):
                         for t, dollars in parsed["value_only"].items():
                             if t in latest.columns and not latest[t].dropna().empty:
                                 shares[t] = round(dollars / float(latest[t].dropna().iloc[-1]), 2)
-                    st.session_state.holdings_df = pd.DataFrame({"Ticker": list(shares), "Shares": list(shares.values())})
+                    loaded_df = pd.DataFrame({"Ticker": list(shares), "Shares": list(shares.values())})
+                    fund_notes = []
+                    if parsed.get("estimated_funds"):
+                        loaded_df, fund_notes = add_estimated_funds(loaded_df, parsed["estimated_funds"])
+                    st.session_state.holdings_df = loaded_df
                     if parsed["cash"] > 0:
                         st.session_state.cash = float(parsed["cash"])
                     st.session_state.csv_applied = file_key
-                    st.session_state.csv_notes = ([problem] if problem else []) + parsed["notes"]
-                    st.session_state.csv_needs_value = parsed.get("needs_value") or None
+                    st.session_state.csv_notes = ([problem] if problem else []) + parsed["notes"] + fund_notes
                     st.rerun()
             if st.session_state.get("csv_notes") is not None:
                 st.success("Loaded your holdings from the file. Check them above, then tap Analyze.")
                 for note in st.session_state.csv_notes:
-                    st.caption(note)
-
-    pending = st.session_state.get("csv_needs_value")
-    if pending:
-        with st.form("needs_value"):
-            st.markdown("**Some funds in your file have no ticker** — common in 401(k) and 529 plans. Enter what each is worth today (it's on your statement) and it will be analyzed as a similar public fund. Leave 0 to skip one.")
-            amounts = []
-            for i, fund in enumerate(pending):
-                units = f"{fund['units']:,.2f} units, " if fund.get("units") else ""
-                amounts.append(st.number_input(
-                    f"{fund['label']} ({units}analyzed as {fund['ticker']}) — value ($)",
-                    min_value=0.0, value=float(fund.get("value") or 0.0), step=100.0,
-                    key=f"needs_value_{i}", help=fund.get("why") or None,
-                ))
-            add_col, skip_col = st.columns(2)
-            add_funds = add_col.form_submit_button("Add these funds", type="primary", use_container_width=True)
-            skip_funds = skip_col.form_submit_button("Leave them out", use_container_width=True)
-        if add_funds or skip_funds:
-            notes = list(st.session_state.get("csv_notes") or [])
-            if add_funds:
-                holdings_df, added_notes = add_dollar_holdings(holdings_df, pending, amounts)
-                st.session_state.holdings_df = holdings_df
-                notes += added_notes
-            st.session_state.csv_notes = notes
-            st.session_state.csv_needs_value = None
-            st.rerun()
+                    st.caption(note.replace("$", "\\$"))
 
     if not analyzed:
         st.subheader("Step 2 — Analyze")
