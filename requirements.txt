@@ -5,3 +5,4 @@ yfinance
 matplotlib
 seaborn
 altair
+openai
