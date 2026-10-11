@@ -14,6 +14,8 @@ MIN_UNIT_PRICE, MAX_UNIT_PRICE = 0.5, 5000
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"}
 NUMBER_RE = re.compile(r"\(?-?\$?\d[\d,]*(?:\.\d+)?\)?|\(?-?\$?\.\d+\)?")
 
+PROXY_GUIDE = 'US bond / aggregate bond index -> BND; developed ex-US / international index -> VEA; emerging markets -> VWO; US extended market / small-mid cap index -> VXF; S&P 500 or large-cap equity index -> VOO; total US stock market -> VTI; target-date or "Portfolio 20XX" -> the Vanguard Target Retirement fund for the nearest year (2025 VTTVX, 2030 VTHRX, 2035 VTTHX, 2040 VFORX, 2045 VTIVX, 2050 VFIFX, 2055 VFFVX, 2060 VTTSX, 2065 VLXVX).'
+
 SYSTEM_PROMPT = """You read brokerage holdings exports (CSV) and list every position in them as JSON.
 
 Reply with ONLY a JSON object of this exact shape, no other text:
@@ -25,10 +27,21 @@ Rules:
 - ticker: the Yahoo Finance ticker. Remove broker marks such as "@", "*" or trailing spaces (e.g. "NFLX@" -> "NFLX").
 - kind "cash": cash, sweep, core position and money-market funds (SPAXX, FDRXX, FZFXX, FCASH, SWVXX, VMFXX, "Cash"...). They are worth $1 per unit.
 - kind "no_ticker_fund": a fund with no public ticker, such as 401(k) collective trusts, 529 portfolios and plan-only index funds. Give the closest liquid proxy_ticker:
+  """ + PROXY_GUIDE + """ Stable value -> treat as kind "cash".
   Also give unit_price: your best estimate of that fund's current price per unit in US dollars, from what you know about the fund or its share classes (null for other kinds, or if you truly can't tell). Plan trust and 529 units are often priced well away from the proxy's share price.
-  US bond / aggregate bond index -> BND; developed ex-US / international index -> VEA; emerging markets -> VWO; US extended market / small-mid cap index -> VXF; S&P 500 or large-cap equity index -> VOO; total US stock market -> VTI; target-date or "Portfolio 20XX" -> the Vanguard Target Retirement fund for the nearest year (2025 VTTVX, 2030 VTHRX, 2035 VTTHX, 2040 VFORX, 2045 VTIVX, 2050 VFIFX, 2055 VFFVX, 2060 VTTSX, 2065 VLXVX); stable value -> treat as kind "cash".
 - kind "other": options, CUSIP-only bonds, or anything you cannot identify. Explain in note.
 - notes: short, plain-English remarks about anything unusual in the file (at most 4)."""
+
+ESTIMATE_PROMPT = """These holdings have no price data on Yahoo Finance (often plan-only, closed or renamed funds). For each one, pick the closest liquid public stand-in that Yahoo Finance does price, and estimate its current price per unit.
+
+Reply with ONLY a JSON object of this exact shape, no other text:
+{"funds": [{"symbol": str, "proxy_ticker": str, "unit_price": number|null, "why": str}]}
+
+- proxy_ticker: a different, widely traded ETF or mutual fund ticker with the same kind of holdings. For a single stock that was renamed or merged, use its current ticker.
+- unit_price: your best estimate of the original holding's current price per unit in US dollars, or null if you truly can't tell.
+- why: one short line naming what the holding is.
+- Common stand-ins: """ + PROXY_GUIDE + """
+"""
 
 EXAMPLE_CSV = """Symbol,Description,Quantity
 VOO*,VANGUARD S&P 500 ETF,"1,250.5"
@@ -110,15 +123,9 @@ def _best_model(offered, avoid=()):
     return usable[0] if usable else None
 
 
-def _ask(text, cfg):
+def _ask(messages, cfg):
     import openai
     client = openai.OpenAI(base_url=cfg["base_url"], api_key=cfg["api_key"] or "none", timeout=90, max_retries=1)
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": EXAMPLE_CSV},
-        {"role": "assistant", "content": EXAMPLE_JSON},
-        {"role": "user", "content": text},
-    ]
     model = cfg["model"]
     try:
         try:
@@ -192,7 +199,12 @@ def parse(data):
         raise ValueError("The file is empty.")
 
     cfg = config()
-    reply, model = _ask(text, cfg)
+    reply, model = _ask([
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": EXAMPLE_CSV},
+        {"role": "assistant", "content": EXAMPLE_JSON},
+        {"role": "user", "content": text},
+    ], cfg)
     positions = reply.get("positions") if isinstance(reply, dict) else None
     if not isinstance(positions, list):
         raise ValueError("The AI model didn't return a list of positions. Try again, or type your holdings in by hand.")
@@ -273,3 +285,29 @@ def parse(data):
         "skipped": skipped,
         "estimated_funds": estimated_funds,
     }
+
+
+def estimate_funds(items):
+    lines = "\n".join(f"{item['label']}: {item['units']:,.4f} units" for item in items)
+    reply, _ = _ask([
+        {"role": "system", "content": ESTIMATE_PROMPT},
+        {"role": "user", "content": lines},
+    ], config())
+    rows = reply.get("funds") if isinstance(reply, dict) else None
+    by_symbol = {}
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict):
+            by_symbol[str(row.get("symbol") or "").strip().upper()] = row
+    estimates = []
+    for item in items:
+        row = by_symbol.get(item["label"].upper())
+        proxy = _ticker(row.get("proxy_ticker")) if row else None
+        if not proxy or proxy == item["label"].upper():
+            continue
+        unit_price = _num(row.get("unit_price"))
+        estimates.append({
+            "label": item["label"], "ticker": proxy, "units": item["units"], "value": None,
+            "unit_price": unit_price if unit_price and MIN_UNIT_PRICE <= unit_price <= MAX_UNIT_PRICE else None,
+            "why": str(row.get("why") or "").strip(),
+        })
+    return estimates
