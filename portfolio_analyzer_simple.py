@@ -1,3 +1,4 @@
+import re
 from html import escape
 
 import pandas as pd
@@ -14,7 +15,34 @@ import report
 import tips
 
 st.set_page_config(page_title="Portfolio Check-Up", page_icon="🩺", layout="wide", initial_sidebar_state="collapsed")
-cached_download = st.cache_data(show_spinner="Downloading price history...")(engine.download_prices)
+
+
+class IncompleteDownload(Exception):
+    """Raised inside the cache so a download missing some tickers isn't kept; carries what did arrive."""
+
+    def __init__(self, prices):
+        super().__init__("some tickers came back without prices")
+        self.prices = prices
+
+
+@st.cache_data(ttl="6h", max_entries=100, show_spinner="Downloading price history...")
+def _complete_download(tickers, period):
+    prices = engine.download_prices(tickers, period)
+    if any(t not in prices.columns or prices[t].dropna().empty for t in tickers):
+        raise IncompleteDownload(prices)
+    return prices
+
+
+def cached_download(tickers, period):
+    """Prices for every ticker that has them. Only complete downloads are cached, so a ticker Yahoo
+    failed to send is asked for again next time; if the download fails outright, an empty table."""
+    try:
+        return _complete_download([tickers] if isinstance(tickers, str) else list(tickers), period)
+    except IncompleteDownload as e:
+        return e.prices
+    except Exception:
+        return pd.DataFrame()
+
 
 LEVEL_MARK = {"high": ":red[Needs attention]", "medium": ":orange[Worth knowing]", "good": ":green[Working]"}
 LEVEL_LABEL = {"high": "Needs attention", "medium": "Worth knowing", "good": "Working"}
@@ -71,10 +99,31 @@ METHOD = [
 ]
 
 
+SHARE_CLASS = re.compile(r"^([A-Z]{1,4})\.([AB])$")
+
+
+def normalize_ticker(raw):
+    """Yahoo's spelling of a typed ticker ("BRK.B" -> "BRK-B"); None for a blank row."""
+    try:
+        if raw is None or pd.isna(raw):
+            return None
+    except (TypeError, ValueError):
+        pass
+    ticker = str(raw).strip().upper()
+    if ticker in ("", "NAN", "NONE"):
+        return None
+    match = SHARE_CLASS.match(ticker)
+    return f"{match[1]}-{match[2]}" if match else ticker
+
+
+def df_tickers(df):
+    return df["Ticker"].map(normalize_ticker)
+
+
 def holdings_df_to_dict(df):
     holdings = {}
     for _, row in df.iterrows():
-        ticker = str(row["Ticker"]).strip().upper()
+        ticker = normalize_ticker(row["Ticker"])
         shares = row["Shares"]
         if not ticker or pd.isna(shares) or shares <= 0:
             continue
@@ -133,7 +182,7 @@ def add_estimated_funds(df, funds_list):
 
 
 def replace_unpriced(df, holdings, missing):
-    keep = ~df["Ticker"].astype(str).str.strip().str.upper().isin(missing)
+    keep = ~df_tickers(df).isin(missing)
     df = df[keep].reset_index(drop=True)
     notes = []
     if llm_csv.available():
@@ -144,11 +193,11 @@ def replace_unpriced(df, holdings, missing):
         except ValueError as e:
             notes = [f"The AI couldn't suggest stand-ins ({e})."]
     holdings = holdings_df_to_dict(df)
-    prices = cached_download(download_list(list(holdings)), PERIOD) if holdings else None
+    prices, unconverted = analysis_prices(list(holdings)) if holdings else (None, {})
     recent = history.window(prices, GRADE_YEARS) if holdings else None
-    still = [t for t in holdings if t not in prices.columns or recent[t].dropna().empty]
+    still = [t for t in holdings if t not in unconverted and (t not in prices.columns or recent[t].dropna().empty)]
     if still:
-        df = df[~df["Ticker"].astype(str).str.strip().str.upper().isin(still)].reset_index(drop=True)
+        df = df[~df_tickers(df).isin(still)].reset_index(drop=True)
         holdings = holdings_df_to_dict(df)
     left_out = sorted(set(still) | {t for t in missing if not any(t in n for n in notes)})
     if left_out:
@@ -166,10 +215,23 @@ def download_list(tickers):
     return list(dict.fromkeys(sorted(tickers) + ["SPY"] + BENCHMARK_TICKERS + list(optimizer.CANDIDATES)))
 
 
-@st.cache_data(show_spinner="Trying what-if scenarios...")
+def analysis_prices(tickers):
+    """Full price history for the holdings plus comparison funds, in US dollars and on US trading days.
+    Returns (prices, {ticker: currency} for holdings that couldn't be converted; those are left out of prices)."""
+    prices = cached_download(download_list(tickers), PERIOD)
+    foreign = {t: funds.currency_of(t) for t in tickers if t in prices.columns}
+    foreign = {t: c for t, c in foreign.items() if c != "USD"}
+    unconverted = {}
+    if foreign:
+        fx = cached_download(sorted({history.fx_ticker(c) for c in foreign.values()}), PERIOD)
+        prices, unconverted = history.to_usd(prices, foreign, fx)
+    return history.align_to_market(prices), unconverted
+
+
+@st.cache_data(ttl="6h", max_entries=50, show_spinner="Trying what-if scenarios...")
 def cached_swaps(holdings_items, cash, years):
     holdings = dict(holdings_items)
-    prices = cached_download(download_list(list(holdings)), PERIOD)
+    prices, _ = analysis_prices(list(holdings))
     returns = history.window(engine.compute_returns(prices), years)
     return optimizer.suggest_swaps(holdings, prices, returns, cash, k=3)
 
@@ -438,10 +500,10 @@ with st.container(border=True):
 
         tickers = list(holdings.keys())
         look_up_holdings(tickers)
-        prices = cached_download(download_list(tickers), PERIOD)
+        prices, unconverted = analysis_prices(tickers)
         recent = history.window(prices, GRADE_YEARS)
 
-        missing = [t for t in tickers if t not in prices.columns or recent[t].dropna().empty]
+        missing = [t for t in tickers if t not in unconverted and (t not in prices.columns or recent[t].dropna().empty)]
         analyze_notes = []
         if missing:
             holdings_df, holdings, analyze_notes = replace_unpriced(holdings_df, holdings, missing)
@@ -451,7 +513,17 @@ with st.container(border=True):
                 st.stop()
             tickers = list(holdings.keys())
             look_up_holdings(tickers)
-            prices = cached_download(download_list(tickers), PERIOD)
+            prices, unconverted = analysis_prices(tickers)
+        if unconverted:
+            analyze_notes = analyze_notes + [f"Couldn't convert {t} from {c} to dollars, so it was left out." for t, c in unconverted.items()]
+            holdings_df = holdings_df[~df_tickers(holdings_df).isin(list(unconverted))].reset_index(drop=True)
+            st.session_state.holdings_df = holdings_df
+            holdings = holdings_df_to_dict(holdings_df)
+            tickers = list(holdings.keys())
+            if not holdings:
+                for note in analyze_notes:
+                    st.warning(note.replace("$", "\\$"))
+                st.stop()
         st.session_state.analyze_notes = analyze_notes
         classify_unknown(tickers, prices)
 
@@ -567,6 +639,8 @@ else:
         if custom:
             try:
                 custom_prices = cached_download([custom], PERIOD)
+                if custom in custom_prices.columns:
+                    custom_prices = history.align_to_dates(custom_prices, prices.index)
             except Exception:
                 custom_prices = pd.DataFrame()
             if custom_prices.empty or custom not in custom_prices.columns or custom_prices[custom].dropna().empty:

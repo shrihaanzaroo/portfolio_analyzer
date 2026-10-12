@@ -84,6 +84,8 @@ _cache = {}
 # stocks whose sector/country were added to ref.SECTOR_MAP / regions.COUNTRY_OVERRIDES while the app runs, and where that came from;
 # AI entries also keep "at" (time.time() when added) and "added" (which of "sector"/"country" the AI itself inserted) so they can expire
 STOCK_INFO = {}
+# the currency Yahoo quotes each looked-up ticker in ("USD", "JPY", "GBp", ...); kept for the whole app like STOCK_INFO
+CURRENCY = {}
 _lock = threading.RLock()  # app sessions run in threads and share these maps
 
 
@@ -157,7 +159,7 @@ def plain_country(value):
 
 
 def fetch(ticker):
-    """A fund's composition; {"kind": "stock", "sector", "country"} for a stock (either may be None);
+    """A fund's composition; {"kind": "stock", "sector", "country", "currency"} for a stock (any may be None);
     False if Yahoo says it is something else; None if Yahoo could not be reached."""
     try:
         tk = yf.Ticker(ticker)
@@ -167,7 +169,7 @@ def fetch(ticker):
     if not info.get("quoteType"):
         return None
     if info.get("quoteType") == "EQUITY":
-        return {"kind": "stock", "sector": stock_sector(info), "country": plain_country(info.get("country"))}
+        return {"kind": "stock", "sector": stock_sector(info), "country": plain_country(info.get("country")), "currency": info.get("currency")}
     if info.get("quoteType") not in ("ETF", "MUTUALFUND"):
         return False
 
@@ -204,7 +206,7 @@ def fetch(ticker):
     else:
         sector = next((s for k, s in SECTOR_CATEGORIES.items() if k in cat), "Index")
 
-    entry = {"sector": sector, "br": breadth_for(category), "name": name, "category": category}
+    entry = {"sector": sector, "br": breadth_for(category), "name": name, "category": category, "currency": info.get("currency")}
     if sector not in ("Bonds", "Gold"):
         if mix:
             entry["mix"] = mix
@@ -223,9 +225,12 @@ def register(tickers):
     found, stocks = {}, {}
     for t in tickers:
         if t in ref.SECTOR_MAP and estimated_by(t) != "ai":
+            if t not in STOCK_INFO:  # the built-in table lists US stocks only
+                _set_currency(t, "USD")
             continue
         if t in ref.FUND_SPEC:
             found[t] = ref.FUND_SPEC[t]
+            _set_currency(t, ref.FUND_SPEC[t].get("currency", "USD"))  # built-in funds (no "currency") are US-listed
             continue
         if t not in _cache:
             entry = fetch(t)
@@ -237,10 +242,11 @@ def register(tickers):
         else:
             entry = _cache[t]
         if entry and entry.get("kind") == "stock":
-            stocks[t] = {"sector": entry["sector"], "country": entry["country"]}
+            stocks[t] = {"sector": entry["sector"], "country": entry["country"], "currency": entry.get("currency")}
         elif entry:
             ref.FUND_SPEC[t] = entry
             found[t] = entry
+            _set_currency(t, entry.get("currency", "USD"))
     apply_stocks(stocks)
     return {"funds": found, "stocks": stocks}
 
@@ -248,6 +254,19 @@ def register(tickers):
 def apply(entries):
     for t, entry in entries.items():
         ref.FUND_SPEC.setdefault(t, entry)
+        _set_currency(t, entry.get("currency", "USD"))
+
+
+def _set_currency(ticker, code):
+    if code:
+        with _lock:
+            CURRENCY[ticker] = code
+
+
+def currency_of(ticker):
+    """The currency a ticker's prices are in; US dollars when it was never looked up or Yahoo didn't say."""
+    with _lock:
+        return CURRENCY.get(ticker) or "USD"
 
 
 def apply_stocks(stocks, source="yahoo"):
@@ -255,6 +274,7 @@ def apply_stocks(stocks, source="yahoo"):
     except that Yahoo replaces what the AI estimated."""
     with _lock:
         for t, item in list(stocks.items()):
+            _set_currency(t, item.get("currency"))
             _apply_stock(t, item, source)
 
 

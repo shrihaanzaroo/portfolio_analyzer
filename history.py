@@ -97,3 +97,50 @@ def late_starter(firsts, actual_start, requested_start, grace_days=30):
         return None
     known = {t: d for t, d in firsts.items() if d is not None}
     return max(known, key=known.get) if known else None
+
+
+def align_to_dates(prices, dates, limit=5):
+    """Puts prices on the given dates, carrying a price forward over at most `limit` of those dates
+    where it is missing (never back before a ticker's first price)."""
+    return prices.reindex(pd.DatetimeIndex(dates)).ffill(limit=limit)
+
+
+def align_to_market(prices, anchor="SPY", limit=5):
+    """Keeps only the days the anchor traded, so weekend prices (crypto) or other markets' holidays don't leave gaps
+    in daily returns. Returns prices unchanged when the anchor wasn't downloaded."""
+    if anchor not in prices.columns:
+        return prices
+    return align_to_dates(prices, prices.index[prices[anchor].notna()], limit)
+
+
+# Yahoo quotes some markets in hundredths of the currency (London in pence, Tel Aviv in agorot, Johannesburg in cents)
+MINOR_UNITS = {"GBp": ("GBP", 100), "GBX": ("GBP", 100), "ILA": ("ILS", 100), "ZAc": ("ZAR", 100), "ZAC": ("ZAR", 100)}
+
+
+def fx_ticker(currency):
+    """Yahoo's ticker for the price of one unit of `currency` in US dollars."""
+    base = MINOR_UNITS.get(currency, (currency, 1))[0]
+    return f"{base}USD=X"
+
+
+def to_usd(prices, currencies, fx, limit=5):
+    """Converts the columns named in `currencies` ({ticker: currency code}) to US dollars using FX closes in `fx`.
+    Returns (converted prices, {ticker: currency} that couldn't be converted); those columns are dropped."""
+    out = prices.copy()
+    missing = {}
+    for ticker, code in currencies.items():
+        if ticker not in out.columns or not code or code == "USD":
+            continue
+        divisor = MINOR_UNITS.get(code, (code, 1))[1]
+        pair = fx_ticker(code)
+        rate = None
+        if fx is not None and pair in fx.columns and not fx[pair].dropna().empty:
+            closes = fx[pair].dropna()
+            rate = closes.reindex(closes.index.union(out.index)).ffill(limit=limit).reindex(out.index)
+        has_price = out[ticker].notna()
+        if rate is None or rate[has_price].dropna().empty:
+            missing[ticker] = code
+            out = out.drop(columns=ticker)
+            continue
+        out[ticker] = out[ticker] / divisor * rate
+    return out, missing
