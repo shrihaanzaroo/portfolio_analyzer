@@ -11,6 +11,7 @@ half of one holding, the grade letter and real bets not lower, and at least one 
 import math
 
 import engine
+import funds  # noqa: F401 -- gives the industry funds below their industry without a Yahoo lookup
 import history
 import scorecard
 
@@ -20,11 +21,11 @@ CANDIDATES = {
     "VTI": "the whole US stock market in one fund",
     "EFA": "large companies outside the US",
     "VWO": "companies in emerging markets like India and China",
-    "JNJ": "health care — a different industry from tech",
-    "XOM": "energy — it moves with oil prices, not with tech",
-    "PG": "everyday household brands — steady on purpose",
-    "JPM": "banking — a different industry from tech",
-    "NEE": "a utility — steady and low-drama",
+    "XLV": "health care companies — a different industry from tech",
+    "XLE": "energy companies — they move with oil prices, not with tech",
+    "XLP": "everyday household brands — steady on purpose",
+    "XLF": "banks and insurers — a different industry from tech",
+    "XLU": "utilities — steady and low-drama",
 }
 
 SCORE = {"A": 4, "B": 3, "C": 2, "D": 1, "F": 0}

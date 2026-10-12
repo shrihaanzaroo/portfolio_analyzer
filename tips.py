@@ -1,5 +1,6 @@
 import engine
 import reference_data as ref
+import same_direction
 import scorecard
 
 BIG_POSITION = 0.30
@@ -10,6 +11,8 @@ CASH_HEAVY = 0.25
 FEW_BETS_RATIO = 0.5
 MAX_TIPS = 5
 MAX_CLUSTERS = 2
+WORST_DAYS = 0.05  # a safety net has to hold up, on average, on the portfolio's worst 5% of days
+HOLD_UP_SHARE = 1 / 3  # a cushion falls on average less than a third as much as the portfolio on its worst days
 
 LEVEL_ORDER = {"high": 0, "medium": 1, "good": 2}
 COUNT_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
@@ -56,6 +59,20 @@ def redundant_clusters(pairs):
     return clusters
 
 
+def holds_up(weights, returns, ticker, spy_vol):
+    """A low-correlation holding counts as a safety net only if it is no bumpier than the S&P 500
+    and, on the portfolio's worst days, fell on average less than a third as much as the portfolio did."""
+    if engine.ann_vol(returns[ticker]) > spy_vol:
+        return False
+    port = engine.portfolio_returns(weights, returns).dropna()
+    if port.empty:
+        return False
+    worst = port[port <= port.quantile(WORST_DAYS)].index
+    on_worst = returns[ticker].reindex(worst).mean()
+    port_worst = port.reindex(worst).mean()
+    return bool(on_worst == on_worst and on_worst >= HOLD_UP_SHARE * port_worst)
+
+
 def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cutoff=0.75):
     tickers = list(weights.keys())
     n = len(tickers)
@@ -72,12 +89,13 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
     else:
         is_hedge, hedge_corr = {}, {}
     total_weights = {t: w * invested_share for t, w in weights.items()}
-    hedges = [t for t in tickers if is_hedge.get(t) and total_weights[t] <= BIG_POSITION]
+    hedges = [t for t in tickers if is_hedge.get(t) and total_weights[t] <= BIG_POSITION and holds_up(weights, returns, t, spy_vol)]
     cash_share = 1 - invested_share
     biggest, biggest_w = max(total_weights.items(), key=lambda kv: kv[1])
     vol_ratio = port_vol / spy_vol if spy_vol > 0 else None
     true_bets = scorecard.real_bets(weights, returns)
     avg_corr = tb["avg_corr"]
+    same_share = same_direction.portfolio_share(weights, returns) if avg_corr is not None else None
     examples = sector_examples()
     user_sectors = {row["sector"] for row in sec["sectors"]}
     missing_sectors = [s for s in ref.SP500 if s not in user_sectors]
@@ -90,41 +108,41 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
                 "level": "good",
                 "title": f"{biggest} is your biggest holding ({pct(biggest_w)}), and that's fine",
                 "why": f"{biggest} is a fund, so that money is already spread across many companies. A big slice of a broad fund is not the same as a big slice of one stock.",
-                "action": "Nothing to fix here. If you add individual stocks later, just watch that no single one of them gets this large.",
+                "action": "Nothing stands out here. The 10–20% rule of thumb is about single stocks, not broad funds.",
             })
         else:
             tips.append({
                 "level": "high",
                 "title": f"{biggest} alone is {pct(biggest_w)} of your money",
                 "why": "One company's bad quarter, lawsuit, or CEO surprise would move your whole portfolio. A common rule of thumb is to keep any single stock under about 10–20%.",
-                "action": f"Trim {biggest} and spread that money across a couple of other holdings — or into a broad fund like VTI, which holds thousands of companies at once.",
+                "action": "Portfolios that keep any one stock under about 10–20% feel a single company's news much less. That is usually done by spreading money across more holdings, or through a broad index fund (for example VTI, which holds thousands of companies).",
             })
 
     if n >= 3 and true_bets < FEW_BETS_RATIO * n:
-        corr_text = f" — on average their moves match about {pct(max(0, avg_corr))} of the time" if avg_corr is not None else ""
+        corr_text = f" — on {pct(same_share)} of days they moved in the same direction (unrelated holdings would match about half the time)" if same_share is not None else ""
         tips.append({
             "level": "high",
             "title": f"Your {n} holdings act like only about {true_bets:.1f} real bets",
             "why": f"They tend to rise and fall at the same time{corr_text}. When that happens, owning more of them doesn't protect you — a bad day for one is a bad day for all.",
-            "action": "Add something that moves differently: a company from a different industry, a bond fund like BND, or an international fund like EFA. Another stock similar to the ones you already own mostly won't count as a new bet.",
+            "action": "Holdings that move differently add new bets: companies in other industries, bond funds (such as BND) or international funds (such as EFA). Another stock similar to ones already held mostly doesn't.",
         })
 
     clusters = []
     for members in redundant_clusters(redundant):
-        inside = [p for p in redundant if p[0] in members and p[1] in members]
         clusters.append({
             "names": sorted(members, key=lambda t: (-total_weights[t], t)),
-            "corr": sum(p[2] for p in inside) / len(inside),
+            "same": same_direction.average_share(sorted(members), returns),
             "money": sum(total_weights[t] for t in members),
         })
     clusters.sort(key=lambda c: (-len(c["names"]), -c["money"]))
     for c in clusters[:MAX_CLUSTERS]:
         names = c["names"]
+        same_text = f" (they moved in the same direction on about {pct(c['same'])} of days)" if c["same"] is not None else ""
         tips.append({
             "level": "medium",
             "title": f"{join_names(names)} move together, so they don't fully spread your risk",
-            "why": f"When one of them has a bad day the others usually do too (their moves match about {c['corr'] * 100:.0f}% of the time). Together they are {pct(c['money'])} of your money — holding all {COUNT_WORDS.get(len(names), str(len(names)))} adds far less independent risk-spreading than {COUNT_WORDS.get(len(names), str(len(names)))} separate holdings usually would.",
-            "action": "Treat them as one position when deciding how much to invest. To make them count as separate bets again, keep the one you believe in most and move the rest into something that moves differently — the what-if scenarios further down show how that would have changed things.",
+            "why": f"When one of them has a bad day the others usually do too{same_text}. Together they are {pct(c['money'])} of your money — holding all {COUNT_WORDS.get(len(names), str(len(names)))} adds far less independent risk-spreading than {COUNT_WORDS.get(len(names), str(len(names)))} separate holdings usually would.",
+            "action": "In practice they behave like one position. The what-if scenarios further down show how this mix would have behaved with some of that money in something that moves differently.",
         })
 
     if overlaps and overlaps[0][2] >= 0.01:
@@ -133,7 +151,7 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
             "level": "medium",
             "title": f"You own {stock} twice — directly, and again through {fund}",
             "why": f"{fund} already holds {stock}. About {pct(implied)} of your money is in {stock} through the fund, on top of the shares you hold directly.",
-            "action": f"That's fine if you want {stock} to be a deliberate extra bet — just know your real exposure is bigger than the {stock} line alone shows.",
+            "action": f"That can be a deliberate extra bet. Either way, your real exposure to {stock} is bigger than the {stock} line alone shows.",
         })
 
     fund_overlap_totals = {}
@@ -147,7 +165,7 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
                 "level": "medium",
                 "title": f"{fund_a} and {fund_b} hold a lot of the same companies",
                 "why": f"Looking inside both funds, about {pct(overlap_w)} of your money sits in companies they both own. That slice isn't spreading your risk any further — it's the same handful of large companies counted twice.",
-                "action": f"Not a mistake, just worth knowing: if you wanted two genuinely different funds, check what each one actually holds before assuming they diversify each other.",
+                "action": "Not a mistake, just worth knowing: two funds only spread risk across each other when what they hold is different.",
             })
 
     max_sector = sec["max_sector"]
@@ -162,7 +180,7 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
             "level": "high" if max_sector > SECTOR_VERY_HEAVY else "medium",
             "title": f"{top['pct']:.0f}% of your stock money is in {top['sector']}",
             "why": f"The S&P 500 has about {top['sp']:.0f}% there. When one industry has a rough year — and every industry eventually does — most of your money feels it at once.",
-            "action": f"Add something from {where}, or a broad index fund like VTI that covers every industry in one go.",
+            "action": f"Holdings from {where}, or a broad index fund that covers every industry (for example VTI), are what usually lower this share.",
         })
 
     if cash_share > CASH_HEAVY:
@@ -170,24 +188,26 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
             "level": "medium",
             "title": f"{pct(cash_share)} of your money is sitting in cash",
             "why": "Cash is a fine cushion, but it doesn't grow — and your grade is discounted because so little is actually invested.",
-            "action": "Decide on purpose how much cushion you want (many people keep a few months of expenses outside investing entirely), then put the rest to work in a broad fund.",
+            "action": "How much cushion to keep is a personal choice (many people keep a few months of expenses outside investing entirely). The grade is discounted because less of the money is invested.",
         })
 
     if n >= 2:
         if hedges:
             best = min(hedges, key=lambda t: hedge_corr[t])
+            best_same = same_direction.share_with_rest(weights, returns, best)
+            same_text = f" (it moved in the same direction as the rest of your portfolio on only about {pct(best_same)} of days)" if best_same is not None else ""
             tips.append({
                 "level": "good",
                 "title": f"{best} acts as a safety net",
-                "why": f"It moves independently of the rest of your portfolio (its moves match the others only about {pct(max(0, hedge_corr[best]))} of the time), so it tends to hold up on days the others fall.",
-                "action": "Keep it. This is what makes a bad month survivable.",
+                "why": f"It moves independently of the rest of your portfolio{same_text}, so it tends to hold up on days the others fall.",
+                "action": "Holdings like this are what make a bad month less severe.",
             })
         else:
             tips.append({
                 "level": "medium",
                 "title": "Nothing here tends to hold up when the rest falls",
-                "why": "Every holding moves with the others, so on a bad day there's nothing cushioning the drop.",
-                "action": "A bond fund (BND or AGG) or gold (GLD) is the classic cushion. Even 10–15% changes how a bad year feels.",
+                "why": "None of your holdings has been both steadier than the S&P 500 and fallen much less than the rest on your portfolio's worst days, so on a bad day there's nothing cushioning the drop.",
+                "action": "Bond funds (such as BND or AGG) and gold (such as GLD) are the classic cushions; even a 10–15% share noticeably changes how a bad year feels.",
             })
 
     if vol_ratio is not None:
@@ -196,14 +216,14 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
                 "level": "medium",
                 "title": f"Your portfolio swings about {pct(vol_ratio - 1)} more than the market",
                 "why": f"Your typical yearly swing is about ±{pct(port_vol)}, versus ±{pct(spy_vol)} for the S&P 500. The real danger isn't the drop itself — it's selling in a panic during one.",
-                "action": "Every fix above (spreading across industries, adding a cushion) lowers this number. So does owning a broad index fund as your core.",
+                "action": "Spreading across industries and adding a cushion both lower this number, as does a broad index fund at the core.",
             })
         elif vol_ratio <= 1.0:
             tips.append({
                 "level": "good",
                 "title": "Your ride is no bumpier than the market's",
                 "why": f"Your typical yearly swing is about ±{pct(port_vol)}, versus ±{pct(spy_vol)} for the S&P 500.",
-                "action": "Keep it that way as you add holdings — check this number again after changes.",
+                "action": "Worth re-checking after any change to your holdings.",
             })
 
     if not redundant and n >= 2:
@@ -211,7 +231,7 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
             "level": "good",
             "title": "No two holdings are near-duplicates",
             "why": "None of your holdings move in lockstep with another, so each one is pulling its own weight.",
-            "action": "When you add something new, check it doesn't just copy something you already own.",
+            "action": "Something new only adds a bet if it doesn't copy something already held.",
         })
 
     if sec["sectors"] and max_sector <= 40:
@@ -219,7 +239,7 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
             "level": "good",
             "title": "Your money is spread across industries",
             "why": f"Your biggest industry is {sec['sectors'][0]['sector']} at {max_sector:.0f}% — no single one dominates.",
-            "action": "Nice. Keep an eye on this as you add holdings.",
+            "action": "Worth re-checking as holdings change.",
         })
 
     kind, _ = scorecard.largest_type(weights)
@@ -229,11 +249,11 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
             "level": "medium",
             "title": "Almost all of your money is in one country",
             "why": "U.S. companies have done very well lately, but no single country leads forever. Money abroad is a bet that doesn't depend on one economy.",
-            "action": "An international fund like VXUS or EFA adds thousands of companies outside the U.S. in one holding.",
+            "action": "International funds (for example VXUS or EFA) hold thousands of companies outside the U.S. in one holding.",
         })
 
     tips.sort(key=lambda t: LEVEL_ORDER[t["level"]])
-    # the page is about what to fix, so one "already working" note is enough
+    # the page is about what holds the grade down, so one "already working" note is enough
     good = [t for t in tips if t["level"] == "good"][:1]
     tips = ([t for t in tips if t["level"] != "good"] + good)[:MAX_TIPS]
 

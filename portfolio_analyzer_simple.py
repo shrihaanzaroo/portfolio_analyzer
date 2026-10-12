@@ -65,7 +65,7 @@ METHOD = [
     ("Moving together.", "Correlation of daily returns between each pair of holdings — a standard statistic from -1 to 1. Holdings that barely move (such as cash-like funds) are left out."),
     ("Real bets.", "This app's own estimate, not an industry standard: the equal-sized-holdings number divided by (1 + (that number - 1) x the average correlation). With no correlation it equals the number of holdings; as holdings move together it falls toward 1. Companies inside the same fund are assumed to move together with a correlation of 0.35, a typical long-run figure for large companies, because a fund's insides cannot be measured from its price."),
     ("The grade.", "An average of six checks, each scored 0 to 4: spread across companies, across industries, across countries, swings compared with the S&P 500, share of months that ended positive, and near-duplicate holdings. Being all in stocks is not marked down on its own; bonds and gold still help through the swings check. It is discounted when most of the money sits in cash. The cut-offs are judgment calls."),
-    ("Scenarios.", "About 100 hypothetical swaps are tried: half or all of each of your five largest holdings, into each of ten common diversifiers (bond, gold, broad-market, international, and steady-industry holdings). Each new mix is re-graded the same way over the same 3 years, and the three that change the most are shown. A swap counts only if it raises the grade or adds at least half a real bet; when fewer than three do, the rest are smaller tweaks: half of one holding, the grade and real bets not lower, and the yearly swing, worst drop or real bets visibly better."),
+    ("Scenarios.", "About 100 hypothetical swaps are tried: half or all of each of your five largest holdings, into each of ten common diversifying funds (bond, gold, broad-market, international and single-industry funds). Each new mix is re-graded the same way over the same 3 years, and the three that change the most are shown. A swap counts only if it raises the grade or adds at least half a real bet; when fewer than three do, the rest are smaller tweaks: half of one holding, the grade and real bets not lower, and the yearly swing, worst drop or real bets visibly better."),
     ("Tested on.", "Six large tech stocks grade C (about 2 real bets, one industry). An S&P 500 fund with bonds, gold and stocks from other industries grades A (just at the cut-off), and more firmly A once an international fund is added. A single stock is capped at D. A single total-market index fund grades B: many companies, but one country. Three overlapping U.S. stock funds grade B but count as about 1.3 real bets."),
     ("Limits.", "Everything here looks backward: it describes how this mix behaved, not how it will. Three years is a short sample, and holdings tend to move together more in a crash than in calm years. Country and fund breadth figures are approximate. Taxes, fees and trading costs are ignored. This is an educational tool, not financial advice."),
 ]
@@ -166,7 +166,7 @@ def download_list(tickers):
     return list(dict.fromkeys(sorted(tickers) + ["SPY"] + BENCHMARK_TICKERS + list(optimizer.CANDIDATES)))
 
 
-@st.cache_data(show_spinner="Looking for better mixes...")
+@st.cache_data(show_spinner="Trying what-if scenarios...")
 def cached_swaps(holdings_items, cash, years):
     holdings = dict(holdings_items)
     prices = cached_download(download_list(list(holdings)), PERIOD)
@@ -323,7 +323,7 @@ def tip_cards(tips_list):
         f"<div class='tip-tag' style='color:{LEVEL_COLOR[t['level']]}'>{LEVEL_LABEL[t['level']]}</div>"
         f"<div class='tip-title'>{escape(t['title'])}</div>"
         f"<div class='tip-why'>{escape(t['why'])}</div>"
-        f"<div class='tip-help'><b>What would help:</b> {escape(t['action'])}</div>"
+        f"<div class='tip-help'><b>What usually changes this:</b> {escape(t['action'])}</div>"
         "</div></div>"
         for t in tips_list
     )
@@ -353,13 +353,13 @@ if "cash" not in st.session_state:
     st.session_state.cash = 0.0
 
 st.title("Portfolio Check-Up")
-st.caption("A plain-English look at whether your investments are really spread out — and what to do about it.")
+st.caption("A plain-English look at whether your investments are really spread out — and what is behind the result.")
 analyzed = st.session_state.weights is not None
 
 if not analyzed:
     st.info(
         "**What this does:** type what you own below and tap **Analyze** for a grade, what's holding it back, "
-        "and what-if swaps that would improve it. The list below is just an example — change it to what you own."
+        "and what-if scenarios showing how a different mix would have behaved. The list below is just an example — change it to what you own."
     )
 
 with st.container(border=True):
@@ -534,7 +534,7 @@ else:
 
     st.divider()
     st.subheader("What-if scenarios")
-    st.info("These are hypothetical educational scenarios, not recommendations to buy or sell. They show how historical risk and diversification would have changed under a different mix.")
+    st.info("These are hypothetical educational scenarios, not recommendations to buy or sell. They show how historical risk and diversification would have changed under a different mix. Only a short fixed list of broad funds is tried; other investments not considered may have similar or better characteristics.")
     swaps = cached_swaps(tuple(sorted(holdings.items())), cash, GRADE_YEARS)
     if any(s.get("tweak") for s in swaps):
         st.caption("Smaller tweaks keep your grade where it is but make at least one number below better — useful when a mix already grades well.")
@@ -549,10 +549,10 @@ else:
             for col, (label, key, fmt, higher_is_better) in zip(st.columns(4), SCENARIO_STATS):
                 stat_chip(col, label, swap["before"][key], swap["after"][key], fmt, higher_is_better)
     if not swaps and advice["grade"] in ("A", "B"):
-        st.write("No single swap from the tested list would have clearly improved this mix — that's a good sign.")
+        st.write("None of the tested swaps would have clearly raised the grade or real bets for this mix — that's a good sign.")
     elif not swaps:
-        st.write("No single swap from the tested list would have clearly improved this mix. The notes above explain what is holding the grade down.")
-    st.caption(f"Each scenario swaps part or all of one large holding for one of ten common diversifiers, then re-grades the mix over the last {GRADE_YEARS} years; the ones that change the most are shown, topped up with smaller tweaks when fewer than three clearly raise the grade or real bets. Typical yearly swing = how much a normal year moves this mix up or down. Worst drop = the biggest fall from a high point before it recovered. A steadier mix usually earns a bit less per year — that trade-off is the point. Share counts use today's prices and are rounded.")
+        st.write("None of the tested swaps would have clearly raised the grade or real bets for this mix. The notes above explain what is holding the grade down.")
+    st.caption(f"Each scenario swaps part or all of one large holding for one of ten common diversifying funds, then re-grades the mix over the last {GRADE_YEARS} years; the ones that change the most are shown, topped up with smaller tweaks when fewer than three clearly raise the grade or real bets. Typical yearly swing = how much a normal year moves this mix up or down. Worst drop = the biggest fall from a high point before it recovered. A steadier mix usually earns a bit less per year — that trade-off is the point. Share counts use today's prices and are rounded.")
 
     st.divider()
     st.subheader("How it has grown")
@@ -727,22 +727,14 @@ else:
         st.write("#### Crashes are when 'spread out' matters most — and when it quietly fails")
         st.write("In calm markets, different industries move somewhat independently. In a real crash, almost everything sells off together, because the cause (panic, forced selling) hits everything at once. Holdings you thought were unrelated turn out to be related right when it matters. That's why a **safety net** — something like bonds or gold that genuinely behaves differently — is worth more than it looks on a normal day.")
 
-        st.write("#### A simple structure many people use")
-        core_satellite = {
-            "Core — broad index funds like VTI or SPY": 55,
-            "Satellites — individual stocks you believe in": 20,
-            "Safety net — bonds, gold, things that move differently": 20,
-            "Cash — a cushion for real life": 5,
-        }
-        for label, share in core_satellite.items():
-            st.write(f"**{label}** — about {share}%")
-            st.progress(share / 100)
+        st.write("#### \"Core\" and \"satellites\"")
+        st.write("Many investors describe a mix as a **core** of broad funds (such as VTI or SPY) plus **satellites**: individual stocks or narrower funds picked one by one. It is a way of describing a portfolio, not a recipe — this tool doesn't suggest any particular split.")
 
     with st.expander("About this project"):
         st.write(
             "**Portfolio Check-Up** takes a list of holdings and explains, in plain English, whether they're actually spread out — "
             "not just how many tickers there are, but how many genuinely independent risks they add up to. It grades the mix, looks "
-            "inside any ETF or mutual fund to see what it really holds, and shows what-if scenarios for common ways to improve it."
+            "inside any ETF or mutual fund to see what it really holds, and shows what-if scenarios for how a few common changes would have affected it."
         )
         st.write(
             "**Designed and built by Shrihaan Zaroo**, as an independent project. The main ideas behind it — real bets, the grade, "

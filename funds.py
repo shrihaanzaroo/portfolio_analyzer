@@ -60,6 +60,15 @@ COMMON_FUNDS = {
     "BNDX": ("Vanguard Total International Bond", "Global Bond"), "SCHZ": ("Schwab U.S. Aggregate Bond", "Intermediate Core Bond"),
     "IAU": ("iShares Gold Trust", "Commodities Focused Gold"),
 }
+# the industry funds optimizer.CANDIDATES tries, so their industry is known without a Yahoo lookup;
+# breadth is on the reference_data scale (about one over the sum of squared holding weights), not a holdings count
+INDUSTRY_FUNDS = {
+    "XLV": ("Health Care Select Sector SPDR Fund", "Health Care", 25),
+    "XLE": ("Energy Select Sector SPDR Fund", "Energy", 10),
+    "XLP": ("Consumer Staples Select Sector SPDR Fund", "Consumer Staples", 20),
+    "XLF": ("Financial Select Sector SPDR Fund", "Financials", 20),
+    "XLU": ("Utilities Select Sector SPDR Fund", "Utilities", 20),
+}
 STOCK_TICKER = re.compile(r"^[A-Z][A-Z.\-]{0,5}$")
 PLAIN_COUNTRY = re.compile(r"^[A-Za-z][A-Za-z .'\-]{1,39}$")
 
@@ -76,6 +85,15 @@ _cache = {}
 # AI entries also keep "at" (time.time() when added) and "added" (which of "sector"/"country" the AI itself inserted) so they can expire
 STOCK_INFO = {}
 _lock = threading.RLock()  # app sessions run in threads and share these maps
+
+
+def industry_fund_spec(name, sector, breadth):
+    return {"sector": sector, "br": breadth, "mix": {sector: 100}, "assets": {"Stocks": 100, "Bonds": 0, "Cash": 0},
+            "countries": {"United States": 100}, "name": name, "category": sector}
+
+
+for _ticker, _fund in INDUSTRY_FUNDS.items():
+    ref.FUND_SPEC.setdefault(_ticker, industry_fund_spec(*_fund))
 
 
 def breadth_for(category):

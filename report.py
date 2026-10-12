@@ -51,7 +51,7 @@ def build_html(d):
     for t in d["tips"]:
         parts.append(
             f"<div class='card'><p><span class='tag' style='color:{LEVEL_COLOR[t['level']]}'>{LEVEL_LABEL[t['level']]}</span> — <b>{escape(t['title'])}</b></p>"
-            f"<p>{escape(t['why'])}</p><p class='small'>What would help: {escape(t['action'])}</p></div>"
+            f"<p>{escape(t['why'])}</p><p class='small'>What usually changes this: {escape(t['action'])}</p></div>"
         )
 
     parts.append("<h2>Where the money is</h2><table><tr><th>Holding</th><th class='num'>Share of everything you own</th></tr>")
@@ -76,9 +76,9 @@ def build_html(d):
     parts.append(rows(d["crashes"], lambda c: [td(c["name"]), td(c["dates"]), td(c["you"], "num"), td(c["spy"], "num")]))
     parts.append("</table>")
 
-    parts.append("<h2>What-if scenarios</h2><p class='small'>Hypothetical educational scenarios, not recommendations to buy or sell. They show how risk and diversification would have changed over the last 3 years under a different mix.</p>")
+    parts.append("<h2>What-if scenarios</h2><p class='small'>Hypothetical educational scenarios, not recommendations to buy or sell. They show how risk and diversification would have changed over the last 3 years under a different mix. Only a short fixed list of broad funds is tried; other investments not considered may have similar or better characteristics.</p>")
     if not d["scenarios"]:
-        parts.append("<p>No single swap from the tested list would have clearly improved this mix.</p>")
+        parts.append("<p>None of the tested swaps would have clearly raised the grade or real bets for this mix.</p>")
     for i, s in enumerate(d["scenarios"], 1):
         b, a = s["before"], s["after"]
         parts.append(

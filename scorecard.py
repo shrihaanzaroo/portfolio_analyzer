@@ -4,6 +4,7 @@ overall letter is their average, discounted by engine.earned when most money sit
 import engine
 import reference_data as ref
 import regions
+import same_direction
 
 POINTS = {"A": 4, "B": 3, "C": 2, "D": 1, "F": 0}
 HOME = "United States"
@@ -92,8 +93,13 @@ def grade(weights, returns, invested_share):
         together_points, together_text, together_short = 4, "Your holdings are too steady to move together in any way that matters.", "Very steady"
     else:
         together_points = 4 if avg_corr <= 0.2 else 3 if avg_corr <= 0.4 else 2 if avg_corr <= 0.6 else 1
-        together_text = f"On a typical day your holdings' moves match about {max(0, avg_corr) * 100:.0f}% of the time. Lower means they protect each other more."
-        together_short = f"Move {max(0, avg_corr) * 100:.0f}% in sync"
+        same = same_direction.portfolio_share(weights, returns)
+        if same is None:
+            together_text = "Your holdings' daily moves don't overlap enough in time to compare."
+            together_short = "Not enough overlap"
+        else:
+            together_text = f"On a typical day your holdings moved in the same direction about {same * 100:.0f}% of the time (two unrelated holdings would match about half the time)."
+            together_short = f"Same direction {same * 100:.0f}% of days"
 
     dimensions = [
         {"name": "Across companies", "label": "Companies", "score": points["Diversification"], "level": level(points["Diversification"]),
