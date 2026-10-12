@@ -7,6 +7,10 @@ pip install -r requirements.txt
 streamlit run portfolio_analyzer_simple.py
 ```
 
+## Running the tests
+
+`pip install -r requirements-dev.txt`, then run `python -m pytest -q` from this folder. The tests use made-up prices and fake Yahoo/AI answers, so they work offline and finish in under a minute. `./deploy.sh` runs them before every push and stops if any fail.
+
 ## Reading brokerage files with an open AI model
 
 The CSV upload first uses a built-in reader. If that reader can't match every line, the app asks an open-weight LLM to read the file. This helps with 401(k) and 529 trust funds that have no ticker, money-market cash, broker marks like `NFLX@`, and other unusual layouts. You can also tick **Use AI to read this file** to always use the LLM. Funds with no ticker are analyzed as a similar public fund (for example, a US bond index trust as BND). Their dollar value is estimated from the units in the file and the AI's best guess of the price per unit, and you can adjust the shares in the table afterwards.
