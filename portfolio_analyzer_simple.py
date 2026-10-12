@@ -263,6 +263,7 @@ def classify_unknown(tickers, prices):
     recent = history.window(prices, GRADE_YEARS)
     priced = [t for t in funds.unknown_sector(tickers) if t in recent.columns and not recent[t].dropna().empty]
     if priced and llm_csv.available():
+        st.write("Looking up industries")
         try:
             funds.apply_stocks(cached_classify(tuple(sorted(priced)[:AI_CLASSIFY_LIMIT])), source="ai")
         except Exception:
@@ -438,7 +439,7 @@ with st.container(border=True):
             "Shares": st.column_config.NumberColumn("Shares you own", min_value=0),
         },
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
     tickers_typed = [str(t).strip().upper() for t in holdings_df["Ticker"] if str(t).strip()]
     duplicates = {t for t in tickers_typed if tickers_typed.count(t) > 1}
@@ -448,7 +449,7 @@ with st.container(border=True):
     left, right = st.columns(2)
     if not holdings_df.empty:
         ticker_to_delete = left.selectbox("Remove a holding", holdings_df["Ticker"].tolist())
-        if left.button("Delete holding", use_container_width=True):
+        if left.button("Delete holding", width="stretch"):
             st.session_state.holdings_df = holdings_df[holdings_df["Ticker"] != ticker_to_delete].reset_index(drop=True)
             st.rerun()
     cash_input = right.number_input("Cash ($) you're keeping uninvested", min_value=0.0, value=st.session_state.cash, step=100.0, help="Money you've set aside but not invested. Leave at 0 if none.")
@@ -491,7 +492,7 @@ with st.container(border=True):
 
     if not analyzed:
         st.subheader("Step 2 — Analyze")
-    if st.button("Analyze my portfolio", type="primary", use_container_width=True):
+    if st.button("Analyze my portfolio", type="primary", width="stretch"):
         st.session_state.holdings_df = holdings_df
         st.session_state.cash = cash_input
         holdings = holdings_df_to_dict(holdings_df)
@@ -499,40 +500,108 @@ with st.container(border=True):
             st.error("Add at least one holding before analyzing.")
             st.stop()
 
-        tickers = list(holdings.keys())
-        look_up_holdings(tickers)
-        prices, unconverted = analysis_prices(tickers)
-        recent = history.window(prices, GRADE_YEARS)
-
-        missing = [t for t in tickers if t not in unconverted and (t not in prices.columns or recent[t].dropna().empty)]
-        analyze_notes = []
-        if missing:
-            holdings_df, holdings, analyze_notes = replace_unpriced(holdings_df, holdings, missing)
-            st.session_state.holdings_df = holdings_df
-            if not holdings:
-                st.error(f"No price data available for: {', '.join(missing)}. This can happen with a mistyped ticker, or if Yahoo Finance is busy — try again in a moment.")
-                st.stop()
+        with st.status("Checking your portfolio...", expanded=False) as status:
             tickers = list(holdings.keys())
+            st.write("Looking inside your funds")
             look_up_holdings(tickers)
+            st.write("Downloading prices")
             prices, unconverted = analysis_prices(tickers)
-        if unconverted:
-            analyze_notes = analyze_notes + [f"Couldn't convert {t} from {c} to dollars, so it was left out." for t, c in unconverted.items()]
-            holdings_df = holdings_df[~df_tickers(holdings_df).isin(list(unconverted))].reset_index(drop=True)
-            st.session_state.holdings_df = holdings_df
-            holdings = holdings_df_to_dict(holdings_df)
-            tickers = list(holdings.keys())
-            if not holdings:
-                for note in analyze_notes:
-                    st.warning(note.replace("$", "\\$"))
-                st.stop()
-        st.session_state.analyze_notes = analyze_notes
-        classify_unknown(tickers, prices)
+            recent = history.window(prices, GRADE_YEARS)
 
-        st.session_state.holdings = holdings
-        st.session_state.prices = prices
-        st.session_state.returns = engine.compute_returns(prices)
-        st.session_state.weights, st.session_state.stock_value = holdings_to_weights(holdings, prices)
+            missing = [t for t in tickers if t not in unconverted and (t not in prices.columns or recent[t].dropna().empty)]
+            analyze_notes = []
+            if missing:
+                st.write(f"Rechecking {', '.join(missing)}")
+                holdings_df, holdings, analyze_notes = replace_unpriced(holdings_df, holdings, missing)
+                st.session_state.holdings_df = holdings_df
+                if not holdings:
+                    status.update(label="Couldn't finish", state="error", expanded=True)
+                    st.error(f"No price data available for: {', '.join(missing)}. This can happen with a mistyped ticker, or if Yahoo Finance is busy — try again in a moment.")
+                    st.stop()
+                tickers = list(holdings.keys())
+                look_up_holdings(tickers)
+                prices, unconverted = analysis_prices(tickers)
+            if unconverted:
+                analyze_notes = analyze_notes + [f"Couldn't convert {t} from {c} to dollars, so it was left out." for t, c in unconverted.items()]
+                holdings_df = holdings_df[~df_tickers(holdings_df).isin(list(unconverted))].reset_index(drop=True)
+                st.session_state.holdings_df = holdings_df
+                holdings = holdings_df_to_dict(holdings_df)
+                tickers = list(holdings.keys())
+                if not holdings:
+                    status.update(label="Couldn't finish", state="error", expanded=True)
+                    for note in analyze_notes:
+                        st.warning(note.replace("$", "\\$"))
+                    st.stop()
+            st.session_state.analyze_notes = analyze_notes
+            classify_unknown(tickers, prices)
+            st.write("Working out your mix")
+
+            st.session_state.holdings = holdings
+            st.session_state.prices = prices
+            st.session_state.returns = engine.compute_returns(prices)
+            st.session_state.weights, st.session_state.stock_value = holdings_to_weights(holdings, prices)
+            status.update(label="Done", state="complete")
         st.rerun()
+
+
+@st.fragment
+def growth_section(weights, returns, prices, tickers, holdings, invested_share, swaps):
+    """The 'How it has grown' picker, window and chart. A fragment, so changing them reruns only this part."""
+    pick, custom_col = st.columns(2)
+    choice = pick.selectbox("Compare with", list(BENCHMARKS) + [CUSTOM_OPTION])
+    bench_label, bench_weights, bench_returns = DEFAULT_BENCHMARK, BENCHMARKS[DEFAULT_BENCHMARK], returns
+    if choice in BENCHMARKS:
+        bench_label, bench_weights = choice, BENCHMARKS[choice]
+    else:
+        custom = custom_col.text_input("Ticker to compare with", value="").strip().upper()
+        if custom:
+            try:
+                custom_prices = cached_download([custom], PERIOD)
+                if custom in custom_prices.columns:
+                    custom_prices = history.align_to_dates(custom_prices, prices.index)
+            except Exception:
+                custom_prices = pd.DataFrame()
+            if custom_prices.empty or custom not in custom_prices.columns or custom_prices[custom].dropna().empty:
+                st.error(f"No price data for {custom} — comparing with the S&P 500 instead.")
+            else:
+                bench_label, bench_weights, bench_returns = custom, {custom: 1.0}, engine.compute_returns(custom_prices)
+    bench_name = bench_label.split(" (")[0]
+    growth_choice = st.radio("Time window", list(GROWTH_WINDOWS), index=1, horizontal=True, label_visibility="collapsed", key="growth_years")
+    growth_years = GROWTH_WINDOWS[growth_choice]
+    returns_growth = history.window(returns, growth_years)
+
+    your_daily = history.with_cash(history.filled_daily(weights, returns_growth), invested_share)
+    bench_daily = history.portfolio_daily(bench_weights, history.window(bench_returns, growth_years))
+    both = pd.concat([your_daily.rename("You"), bench_daily.rename(bench_name)], axis=1, join="inner")
+    if both.empty:
+        st.warning(f"You and {bench_name} don't share enough price history to compare.")
+    else:
+        st.altair_chart(compare_chart(both.apply(history.growth_of), "line", "Value of $10,000", "$,.0f", 300, zero=False), width="stretch")
+        yours, bench = history.summary(both["You"]), history.summary(both[bench_name])
+        st.markdown(f"Total return since {both.index[0]:%b %Y}: you **{signed_pct(yours['total_return'])}** · {bench_name} **{signed_pct(bench['total_return'])}**")
+        st.markdown(f"Worst drop along the way: you **{pct(yours['max_drawdown'])}** · {bench_name} **{pct(bench['max_drawdown'])}**")
+        st.markdown(f"Typical yearly swing: you **{pct(yours['volatility'])}** · {bench_name} **{pct(bench['volatility'])}**")
+        st.caption(f"Showing {history.date_range_text(both)}{window_note(returns_growth, tickers, both, history.window_start(returns, growth_years), bench=(bench_name, bench_daily.index[0]))}.")
+
+        if swaps:
+            st.markdown("**See a scenario play out**")
+            move = st.selectbox("Scenario to replay", [s["text"] for s in swaps], label_visibility="collapsed", key="whatif_move")
+            swap = next(s for s in swaps if s["text"] == move)
+            after_holdings = dict(holdings)
+            after_holdings[swap["sell_ticker"]] = after_holdings[swap["sell_ticker"]] - swap["sell_shares"]
+            if after_holdings[swap["sell_ticker"]] <= 0:
+                del after_holdings[swap["sell_ticker"]]
+            after_holdings[swap["buy_ticker"]] = after_holdings.get(swap["buy_ticker"], 0) + swap["buy_shares"]
+            after_weights, _ = holdings_to_weights(after_holdings, prices)
+            after_daily = history.with_cash(history.filled_daily(after_weights, returns_growth), invested_share)  # the scenario keeps the same cash
+            trio = pd.concat([your_daily.rename("You now"), after_daily.rename("In the scenario"), bench_daily.rename(bench_name)], axis=1, join="inner")
+            st.altair_chart(compare_chart(trio.apply(history.growth_of), "line", "Value of $10,000", "$,.0f", 300, zero=False, colors=[YOU_COLOR, AFTER_COLOR, BENCH_COLOR]), width="stretch")
+            now, after = history.summary(trio["You now"]), history.summary(trio["In the scenario"])
+            st.markdown(f"Total return since {trio.index[0]:%b %Y}: now **{signed_pct(now['total_return'])}** · in the scenario **{signed_pct(after['total_return'])}**")
+            st.markdown(f"Worst drop along the way: now **{pct(now['max_drawdown'])}** · in the scenario **{pct(after['max_drawdown'])}**")
+            st.markdown(f"Typical yearly swing: now **{pct(now['volatility'])}** · in the scenario **{pct(after['volatility'])}**")
+            st.caption("Past prices, not a prediction — this is how the scenario's mix would have behaved over the same stretch.")
+
 
 for note in st.session_state.get("analyze_notes") or []:
     st.warning(note.replace("$", "\\$"))
@@ -635,60 +704,7 @@ else:
     st.caption(f"What $10,000 in {mix_words} would be worth today, next to whatever you pick to compare it with.")
     if cash > 0:
         st.caption(CASH_NOTE)
-    pick, custom_col = st.columns(2)
-    choice = pick.selectbox("Compare with", list(BENCHMARKS) + [CUSTOM_OPTION])
-    bench_label, bench_weights, bench_returns = DEFAULT_BENCHMARK, BENCHMARKS[DEFAULT_BENCHMARK], returns
-    if choice in BENCHMARKS:
-        bench_label, bench_weights = choice, BENCHMARKS[choice]
-    else:
-        custom = custom_col.text_input("Ticker to compare with", value="").strip().upper()
-        if custom:
-            try:
-                custom_prices = cached_download([custom], PERIOD)
-                if custom in custom_prices.columns:
-                    custom_prices = history.align_to_dates(custom_prices, prices.index)
-            except Exception:
-                custom_prices = pd.DataFrame()
-            if custom_prices.empty or custom not in custom_prices.columns or custom_prices[custom].dropna().empty:
-                st.error(f"No price data for {custom} — comparing with the S&P 500 instead.")
-            else:
-                bench_label, bench_weights, bench_returns = custom, {custom: 1.0}, engine.compute_returns(custom_prices)
-    bench_name = bench_label.split(" (")[0]
-    growth_choice = st.radio("Time window", list(GROWTH_WINDOWS), index=1, horizontal=True, label_visibility="collapsed", key="growth_years")
-    growth_years = GROWTH_WINDOWS[growth_choice]
-    returns_growth = history.window(returns, growth_years)
-
-    your_daily = history.with_cash(history.filled_daily(weights, returns_growth), invested_share)
-    bench_daily = history.portfolio_daily(bench_weights, history.window(bench_returns, growth_years))
-    both = pd.concat([your_daily.rename("You"), bench_daily.rename(bench_name)], axis=1, join="inner")
-    if both.empty:
-        st.warning(f"You and {bench_name} don't share enough price history to compare.")
-    else:
-        st.altair_chart(compare_chart(both.apply(history.growth_of), "line", "Value of $10,000", "$,.0f", 300, zero=False), use_container_width=True)
-        yours, bench = history.summary(both["You"]), history.summary(both[bench_name])
-        st.markdown(f"Total return since {both.index[0]:%b %Y}: you **{signed_pct(yours['total_return'])}** · {bench_name} **{signed_pct(bench['total_return'])}**")
-        st.markdown(f"Worst drop along the way: you **{pct(yours['max_drawdown'])}** · {bench_name} **{pct(bench['max_drawdown'])}**")
-        st.markdown(f"Typical yearly swing: you **{pct(yours['volatility'])}** · {bench_name} **{pct(bench['volatility'])}**")
-        st.caption(f"Showing {history.date_range_text(both)}{window_note(returns_growth, tickers, both, history.window_start(returns, growth_years), bench=(bench_name, bench_daily.index[0]))}.")
-
-        if swaps:
-            st.markdown("**See a scenario play out**")
-            move = st.selectbox("Scenario to replay", [s["text"] for s in swaps], label_visibility="collapsed", key="whatif_move")
-            swap = next(s for s in swaps if s["text"] == move)
-            after_holdings = dict(holdings)
-            after_holdings[swap["sell_ticker"]] = after_holdings[swap["sell_ticker"]] - swap["sell_shares"]
-            if after_holdings[swap["sell_ticker"]] <= 0:
-                del after_holdings[swap["sell_ticker"]]
-            after_holdings[swap["buy_ticker"]] = after_holdings.get(swap["buy_ticker"], 0) + swap["buy_shares"]
-            after_weights, _ = holdings_to_weights(after_holdings, prices)
-            after_daily = history.with_cash(history.filled_daily(after_weights, returns_growth), invested_share)  # the scenario keeps the same cash
-            trio = pd.concat([your_daily.rename("You now"), after_daily.rename("In the scenario"), bench_daily.rename(bench_name)], axis=1, join="inner")
-            st.altair_chart(compare_chart(trio.apply(history.growth_of), "line", "Value of $10,000", "$,.0f", 300, zero=False, colors=[YOU_COLOR, AFTER_COLOR, BENCH_COLOR]), use_container_width=True)
-            now, after = history.summary(trio["You now"]), history.summary(trio["In the scenario"])
-            st.markdown(f"Total return since {trio.index[0]:%b %Y}: now **{signed_pct(now['total_return'])}** · in the scenario **{signed_pct(after['total_return'])}**")
-            st.markdown(f"Worst drop along the way: now **{pct(now['max_drawdown'])}** · in the scenario **{pct(after['max_drawdown'])}**")
-            st.markdown(f"Typical yearly swing: now **{pct(now['volatility'])}** · in the scenario **{pct(after['volatility'])}**")
-            st.caption("Past prices, not a prediction — this is how the scenario's mix would have behaved over the same stretch.")
+    growth_section(weights, returns, prices, tickers, holdings, invested_share, swaps)
 
     st.divider()
     st.subheader("How it would have held up in past crashes")
@@ -759,7 +775,7 @@ else:
         color=alt.Color("Direction:N", scale=alt.Scale(domain=["Up", "Down"], range=["#2ecc71", "#e74c3c"]), legend=None),
         tooltip=[alt.Tooltip("Month:T", title="Month", format="%b %Y"), alt.Tooltip("Return:Q", title="Change", format=".1%")]
     ).properties(height=240)
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
     st.caption(f"Showing {history.date_range_text(steady_daily)}{window_note(returns_steady, tickers, steady_daily, history.window_start(returns, steady_years))}.")
 
     st.divider()
@@ -769,12 +785,12 @@ else:
     with left:
         st.write("**By type of investment**")
         rows = regions.asset_mix(weights_with_cash)
-        st.altair_chart(donut(rows, "asset", "Type", [ASSET_COLORS.get(r["asset"], SLICE_COLORS[-1]) for r in rows]), use_container_width=True)
+        st.altair_chart(donut(rows, "asset", "Type", [ASSET_COLORS.get(r["asset"], SLICE_COLORS[-1]) for r in rows]), width="stretch")
         st.caption(" · ".join(f"{r['asset']} {r['pct']:.0f}%" for r in rows))
     with right:
         st.write("**By country**")
         rows = regions.country_mix(weights_with_cash)
-        st.altair_chart(donut(rows, "country", "Country", SLICE_COLORS[:len(rows)]), use_container_width=True)
+        st.altair_chart(donut(rows, "country", "Country", SLICE_COLORS[:len(rows)]), width="stretch")
         st.caption(" · ".join(f"{r['country']} {r['pct']:.0f}%" for r in rows))
     left, right = st.columns(2)
     with left:
