@@ -1,6 +1,7 @@
 """The Check-Up's grade: engine.report_card's five categories plus one it does not cover,
 spread across countries. Each category scores 0-4, the
-overall letter is their average, discounted by engine.earned when most money sits in cash."""
+overall letter is their average, discounted by engine.earned when most money sits in cash.
+grade() also describes each graded category as a "dimension" (one ring on the page), in two groups."""
 import engine
 import reference_data as ref
 import regions
@@ -9,6 +10,9 @@ import same_direction
 POINTS = {"A": 4, "B": 3, "C": 2, "D": 1, "F": 0}
 HOME = "United States"
 NOT_COUNTRIES = {"Cash", "Gold"}
+SPREAD_OUT = "Spread out"
+BEHAVES = "How it behaves"
+REDUNDANT_CUTOFF = 0.75  # the correlation engine.report_card counts as a near-duplicate pair
 # engine.true_bets cannot see inside a fund, so a fund's many companies would count as fully independent bets;
 # this is the assumed typical correlation between two companies held by the same fund
 WITHIN_FUND_CORRELATION = 0.35
@@ -67,7 +71,6 @@ def grade(weights, returns, invested_share):
 
     eb = engine.effective_bets(weights)
     sec = engine.sector_concentration(weights)
-    avg_corr = engine.true_bets(weights, returns)["avg_corr"]
 
     if sec["sectors"]:
         top = sec["sectors"][0]
@@ -85,31 +88,48 @@ def grade(weights, returns, invested_share):
     else:
         country_text = f"About {abroad * 100:.0f}% of your money is outside the {HOME}."
         country_short = f"{abroad * 100:.0f}% outside the U.S."
-    if len(tickers) == 1 and is_fund(tickers[0]):
-        together_points, together_text, together_short = 0, "One fund: everything inside it rises and falls with the same market.", "One fund, one market"
-    elif len(tickers) == 1:
-        together_points, together_text, together_short = 0, "With one holding, everything moves as one.", "One holding"
-    elif avg_corr is None:
-        together_points, together_text, together_short = 4, "Your holdings are too steady to move together in any way that matters.", "Very steady"
-    else:
-        together_points = 4 if avg_corr <= 0.2 else 3 if avg_corr <= 0.4 else 2 if avg_corr <= 0.6 else 1
-        same = same_direction.portfolio_share(weights, returns)
-        if same is None:
-            together_text = "Your holdings' daily moves don't overlap enough in time to compare."
-            together_short = "Not enough overlap"
-        else:
-            together_text = f"On a typical day your holdings moved in the same direction about {same * 100:.0f}% of the time (two unrelated holdings would match about half the time)."
-            together_short = f"Same direction {same * 100:.0f}% of days"
+
+    def dimension(category, name, label, group, short, text):
+        return {"name": name, "label": label, "group": group, "category": category, "score": points[category],
+                "level": level(points[category]), "short": short, "text": text}
 
     dimensions = [
-        {"name": "Across companies", "label": "Companies", "score": points["Diversification"], "level": level(points["Diversification"]),
-         "short": f"Like {eb:.0f} equal holdings" if eb >= 1.5 else "One company",
-         "text": f"{'Looking inside your funds, your' if any(is_fund(t) for t in tickers) else 'Your'} money is spread like about {eb:.0f} equal-sized companies." if eb >= 1.5 else "Your money rides on a single company."},
-        {"name": "Across industries", "label": "Industries", "score": points["Sector balance"], "level": level(points["Sector balance"]),
-         "short": industry_short, "text": industry_text},
-        {"name": "Across countries", "label": "Countries", "score": points["Countries"], "level": level(points["Countries"]),
-         "short": country_short, "text": country_text},
-        {"name": "Moving independently", "label": "Independence", "score": together_points, "level": level(together_points),
-         "short": together_short, "text": together_text},
+        dimension("Diversification", "Across companies", "Companies", SPREAD_OUT,
+                  f"Like {eb:.0f} equal holdings" if eb >= 1.5 else "One company",
+                  f"{'Looking inside your funds, your' if any(is_fund(t) for t in tickers) else 'Your'} money is spread like about {eb:.0f} equal-sized companies." if eb >= 1.5 else "Your money rides on a single company."),
+        dimension("Sector balance", "Across industries", "Industries", SPREAD_OUT, industry_short, industry_text),
+        dimension("Countries", "Across countries", "Countries", SPREAD_OUT, country_short, country_text),
     ]
+
+    if "Volatility" in points:  # engine.report_card leaves it out when the S&P 500's swing can't be measured
+        port_vol = engine.portfolio_vol(weights, returns[tickers])
+        spy_vol = engine.ann_vol(returns["SPY"])
+        dimensions.append(dimension(
+            "Volatility", "Steadiness compared with the market", "Steadiness", BEHAVES,
+            f"{port_vol / spy_vol:.1f}× the market's swings",
+            f"Your typical yearly swing is about ±{port_vol * 100:.0f}%, versus ±{spy_vol * 100:.0f}% for the S&P 500."))
+
+    monthly = engine.rolling_win_rate(weights, returns[tickers])["monthly"]
+    if len(monthly):
+        ups, months = int((monthly > 0).sum()), len(monthly)
+        consistency_text = f"Your mix ended higher in {ups} of {months} calendar months ({ups / months * 100:.0f}%). Around 6 in 10 is typical for the overall market."
+        consistency_short = f"Up in {ups / months * 100:.0f}% of months"
+    else:
+        consistency_text, consistency_short = "There isn't enough price history to count months.", "Not enough history"
+    dimensions.append(dimension("Consistency", "Consistency month to month", "Consistency", BEHAVES, consistency_short, consistency_text))
+
+    pairs = len(engine.redundant_pairs(weights, returns, REDUNDANT_CUTOFF))
+    if len(tickers) == 1:
+        duplicates_text = "With one holding there is nothing to duplicate."
+    elif pairs == 0:
+        duplicates_text = f"No two of your holdings moved almost in lockstep (a daily correlation above {REDUNDANT_CUTOFF})."
+    else:
+        duplicates_text = f"{pairs} pair{'' if pairs == 1 else 's'} of your holdings moved almost in lockstep (a daily correlation above {REDUNDANT_CUTOFF})."
+    same = same_direction.portfolio_share(weights, returns)
+    if same is not None:
+        duplicates_text += f" On a typical day your holdings moved in the same direction about {same * 100:.0f}% of the time (two unrelated holdings would match about half the time)."
+    dimensions.append(dimension(
+        "No duplicate bets", "Near-duplicate holdings", "Duplicates", BEHAVES,
+        "No near-duplicates" if pairs == 0 else f"{pairs} near-duplicate pair{'' if pairs == 1 else 's'}", duplicates_text))
+
     return {"overall": overall, "score": score, "points": points, "dimensions": dimensions}

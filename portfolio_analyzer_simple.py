@@ -85,12 +85,13 @@ AFTER_COLOR = "#1baf7a"
 BENCH_COLOR = "#898781"
 SLICE_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7"]
 ASSET_COLORS = {"Stocks": "#2a78d6", "Bonds": "#1baf7a", "Gold": "#eda100", "Cash": "#008300"}
+CASH_NOTE = "Cash is counted as earning nothing; the mix is kept at today's split."
 
 METHOD = [
     ("Data.", "Daily closing prices from Yahoo Finance, adjusted for splits and dividends. The grade, the notes and the scenarios use the last 3 years; each chart says which dates it shows. When a chart reaches back before one of your holdings existed, that holding's share is spread across the others for that stretch, as long as the holdings that did exist make up at least half your money; the chart says so when it happens."),
     ("How spread out.", "Your money is converted to weights at today's prices. Concentration uses the Herfindahl index, a standard measure: square each weight and add them up; one divided by that total is the number of equal-sized holdings your mix behaves like."),
     ("Funds.", "ETFs and mutual funds are looked up on Yahoo Finance and looked inside: their largest holdings, industry split and stock/bond/cash split. The rest of a fund is spread across an estimated number of companies for its category (about 50 for an S&P 500 fund, 60 for a total-market fund), not its exact holdings list. If the lookup fails, a built-in table of common index funds is used."),
-    ("Moving together.", "Correlation of daily returns between each pair of holdings — a standard statistic from -1 to 1. Holdings that barely move (such as cash-like funds) are left out."),
+    ("Moving together.", "Correlation of daily returns between each pair of holdings — a standard statistic from -1 to 1. Holdings that barely move (such as cash-like funds) are left out. The \"same direction\" figure is the share of days two holdings both rose or both fell; two unrelated holdings land near half."),
     ("Real bets.", "This app's own estimate, not an industry standard: the equal-sized-holdings number divided by (1 + (that number - 1) x the average correlation). With no correlation it equals the number of holdings; as holdings move together it falls toward 1. Companies inside the same fund are assumed to move together with a correlation of 0.35, a typical long-run figure for large companies, because a fund's insides cannot be measured from its price."),
     ("The grade.", "An average of six checks, each scored 0 to 4: spread across companies, across industries, across countries, swings compared with the S&P 500, share of months that ended positive, and near-duplicate holdings. Being all in stocks is not marked down on its own; bonds and gold still help through the swings check. It is discounted when most of the money sits in cash. The cut-offs are judgment calls."),
     ("Scenarios.", "About 100 hypothetical swaps are tried: half or all of each of your five largest holdings, into each of ten common diversifying funds (bond, gold, broad-market, international and single-industry funds). Each new mix is re-graded the same way over the same 3 years, and the three that change the most are shown. A swap counts only if it raises the grade or adds at least half a real bet; when fewer than three do, the rest are smaller tweaks: half of one holding, the grade and real bets not lower, and the yearly swing, worst drop or real bets visibly better."),
@@ -547,6 +548,7 @@ else:
     cash = st.session_state.cash
     total_value = st.session_state.stock_value + cash
     invested_share = st.session_state.stock_value / total_value if total_value > 0 else 1.0
+    mix_words = "your current mix, including cash," if cash > 0 else "your current mix"  # used mid-sentence
 
     returns_3y = history.window(returns, GRADE_YEARS)
     advice = tips.build_tips(weights, returns_3y, invested_share)
@@ -565,7 +567,7 @@ else:
         m1.metric("Holdings", facts["holdings"])
         m2.metric("Real bets", f"{facts['true_bets']:.1f}")
         m3.metric("Biggest holding", f"{facts['biggest']} · {facts['biggest_pct']:.0f}%")
-        v.caption("Grades run A to F. They reward being spread across companies, industries and countries, and holdings that don't all move together.")
+        v.caption("Grades run A to F. They average the six rings below: spread across companies, industries and countries, plus how steady, how consistent and how free of near-duplicates the mix has been.")
     grade_note = late_start_note(returns_3y, tickers, grade_daily, history.window_start(returns, GRADE_YEARS), "so the grade only covers that stretch")
     if grade_note:
         st.caption(f"Based on prices from {history.date_range_text(grade_daily)}{grade_note}.")
@@ -579,9 +581,11 @@ else:
     report_slot = st.empty()
 
     st.markdown(VISUAL_CSS, unsafe_allow_html=True)
-    st.markdown("**Four ways to be spread out**")
-    st.caption("A fuller ring means more spread out. Each ring is graded on its own.")
-    st.markdown(score_rings(advice["dimensions"]), unsafe_allow_html=True)
+    st.markdown("**What your grade is made of**")
+    st.caption("Your letter grade is the average of these rings (lowered when much of your money sits in cash). A fuller ring scores higher.")
+    for group in dict.fromkeys(dim["group"] for dim in advice["dimensions"]):
+        st.caption(f"**{group}**")
+        st.markdown(score_rings([dim for dim in advice["dimensions"] if dim["group"] == group]), unsafe_allow_html=True)
     with st.expander("What each ring means"):
         for dim in advice["dimensions"]:
             st.markdown(f"**{dim['name']}** — {LEVEL_MARK[dim['level']]}  \n{dim['text']}")
@@ -628,7 +632,9 @@ else:
 
     st.divider()
     st.subheader("How it has grown")
-    st.caption("What $10,000 in this exact mix would be worth today, next to whatever you pick to compare it with.")
+    st.caption(f"What $10,000 in {mix_words} would be worth today, next to whatever you pick to compare it with.")
+    if cash > 0:
+        st.caption(CASH_NOTE)
     pick, custom_col = st.columns(2)
     choice = pick.selectbox("Compare with", list(BENCHMARKS) + [CUSTOM_OPTION])
     bench_label, bench_weights, bench_returns = DEFAULT_BENCHMARK, BENCHMARKS[DEFAULT_BENCHMARK], returns
@@ -652,7 +658,7 @@ else:
     growth_years = GROWTH_WINDOWS[growth_choice]
     returns_growth = history.window(returns, growth_years)
 
-    your_daily = history.filled_daily(weights, returns_growth)
+    your_daily = history.with_cash(history.filled_daily(weights, returns_growth), invested_share)
     bench_daily = history.portfolio_daily(bench_weights, history.window(bench_returns, growth_years))
     both = pd.concat([your_daily.rename("You"), bench_daily.rename(bench_name)], axis=1, join="inner")
     if both.empty:
@@ -675,7 +681,7 @@ else:
                 del after_holdings[swap["sell_ticker"]]
             after_holdings[swap["buy_ticker"]] = after_holdings.get(swap["buy_ticker"], 0) + swap["buy_shares"]
             after_weights, _ = holdings_to_weights(after_holdings, prices)
-            after_daily = history.filled_daily(after_weights, returns_growth)
+            after_daily = history.with_cash(history.filled_daily(after_weights, returns_growth), invested_share)  # the scenario keeps the same cash
             trio = pd.concat([your_daily.rename("You now"), after_daily.rename("In the scenario"), bench_daily.rename(bench_name)], axis=1, join="inner")
             st.altair_chart(compare_chart(trio.apply(history.growth_of), "line", "Value of $10,000", "$,.0f", 300, zero=False, colors=[YOU_COLOR, AFTER_COLOR, BENCH_COLOR]), use_container_width=True)
             now, after = history.summary(trio["You now"]), history.summary(trio["In the scenario"])
@@ -686,7 +692,7 @@ else:
 
     st.divider()
     st.subheader("How it would have held up in past crashes")
-    st.caption("What this exact mix would have done, compared with the S&P 500.")
+    st.caption(f"What {mix_words} would have done, compared with the S&P 500.")
     crashes = [
         ("2022 downturn", "2022-01-03", "2022-10-13"),
         ("COVID crash, 2020", "2020-02-19", "2020-03-23"),
@@ -695,7 +701,7 @@ else:
     worse_count = 0
     compared = 0
     crash_rows = []
-    all_daily = history.filled_daily(weights, returns)
+    all_daily = history.with_cash(history.filled_daily(weights, returns), invested_share)
     cols = st.columns(3, gap="medium")
     for col, (name, start, end) in zip(cols, crashes):
         window = all_daily.loc[start:end]
@@ -827,7 +833,7 @@ else:
             st.write(f"**{heading}** {body}")
 
     spy_daily = history.portfolio_daily({"SPY": 1.0}, returns_3y[["SPY"]])
-    pair = pd.concat([grade_daily.rename("you"), spy_daily.rename("spy")], axis=1, join="inner")
+    pair = pd.concat([history.with_cash(grade_daily, invested_share).rename("you"), spy_daily.rename("spy")], axis=1, join="inner")
     mine, market = history.summary(pair["you"]), history.summary(pair["spy"])
     steady_3y = history.monthly_returns(history.filled_daily(weights, returns_3y))
     report_slot.download_button(
@@ -848,6 +854,7 @@ else:
                 ("Worst drop", pct(mine["max_drawdown"]), pct(market["max_drawdown"])),
             ],
             "performance_range": history.date_range_text(pair),
+            "cash_note": CASH_NOTE if cash > 0 else "",
             "steady": f"{int((steady_3y > 0).sum())} of {len(steady_3y)} months ended positive",
             "crashes": crash_rows, "scenarios": swaps, "method": METHOD,
         }),

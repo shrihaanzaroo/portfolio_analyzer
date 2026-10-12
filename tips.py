@@ -8,7 +8,11 @@ SECTOR_HEAVY = 50
 SECTOR_VERY_HEAVY = 65
 VOL_RATIO_HIGH = 1.3
 CASH_HEAVY = 0.25
-FEW_BETS_RATIO = 0.5
+FEW_BETS_RATIO = 0.5  # the real-bets note only appears when real bets are under half the number of holdings
+# real bets level off near 1 / (typical correlation) however many stocks are held, so with stocks' usual
+# correlation of about 0.25-0.35 a mix of many stocks lands around 3; these cut-offs come from simulated portfolios
+FEW_BETS = 2.0
+SOME_BETS = 3.0
 MAX_TIPS = 5
 MAX_CLUSTERS = 2
 WORST_DAYS = 0.05  # a safety net has to hold up, on average, on the portfolio's worst 5% of days
@@ -57,6 +61,18 @@ def redundant_clusters(pairs):
         seen |= members
         clusters.append(members)
     return clusters
+
+
+def few_bets_level(n, true_bets):
+    """How the real-bets note is marked: "high" when holdings clearly overlap, "medium" when they act like
+    an ordinary mix of stocks (which tops out around 3 real bets), None when there is nothing to say."""
+    if n < 3 or true_bets >= FEW_BETS_RATIO * n:
+        return None
+    if true_bets < FEW_BETS:
+        return "high"
+    if true_bets < SOME_BETS:
+        return "medium"
+    return None
 
 
 def holds_up(weights, returns, ticker, spy_vol):
@@ -118,13 +134,23 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
                 "action": "Portfolios that keep any one stock under about 10–20% feel a single company's news much less. That is usually done by spreading money across more holdings, or through a broad index fund (for example VTI, which holds thousands of companies).",
             })
 
-    if n >= 3 and true_bets < FEW_BETS_RATIO * n:
+    bets_level = few_bets_level(n, true_bets)
+    bets_action = "Holdings that move differently add new bets: companies in other industries, bond funds (such as BND) or international funds (such as EFA). Another stock similar to ones already held mostly doesn't."
+    if bets_level == "high":
         corr_text = f" — on {pct(same_share)} of days they moved in the same direction (unrelated holdings would match about half the time)" if same_share is not None else ""
         tips.append({
             "level": "high",
             "title": f"Your {n} holdings act like only about {true_bets:.1f} real bets",
             "why": f"They tend to rise and fall at the same time{corr_text}. When that happens, owning more of them doesn't protect you — a bad day for one is a bad day for all.",
-            "action": "Holdings that move differently add new bets: companies in other industries, bond funds (such as BND) or international funds (such as EFA). Another stock similar to ones already held mostly doesn't.",
+            "action": bets_action,
+        })
+    elif bets_level == "medium":
+        corr_text = f" (yours moved in the same direction on {pct(same_share)} of days; unrelated holdings would match about half the time)" if same_share is not None else ""
+        tips.append({
+            "level": "medium",
+            "title": f"Your {n} holdings act like about {true_bets:.1f} real bets",
+            "why": f"Stocks tend to rise and fall together{corr_text}, so a mix made mostly of stocks usually tops out at around 3 real bets, however many it holds. Bonds, gold and international holdings tend to move differently from U.S. stocks and add more real bets.",
+            "action": bets_action,
         })
 
     clusters = []
@@ -263,7 +289,7 @@ def build_tips(weights, returns, invested_share, hedge_cutoff=0.30, redundant_cu
         verdict = f"You hold one fund, but it is a broad one — spread across many companies, yet all in one kind of risk: {where}{kind.lower()}."
     elif n == 1:
         verdict = f"Everything is riding on one company. Whatever happens to {biggest} happens to you."
-    elif grade in ("A", "B") and n >= 3 and true_bets < FEW_BETS_RATIO * n:
+    elif grade in ("A", "B") and bets_level == "high":
         verdict = "Spread out on paper — but your holdings overlap, so it's fewer separate bets than it looks."
     elif grade in ("A", "B"):
         verdict = "Looking solid — your holdings are genuinely spread out."

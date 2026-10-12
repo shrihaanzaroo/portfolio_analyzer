@@ -17,6 +17,12 @@ def filled_daily(weights, returns, min_coverage=0.5):
     return daily[covered >= min_coverage].dropna()
 
 
+def with_cash(daily, invested_share):
+    """Daily return of all the money when only invested_share of it follows `daily` and the rest is cash earning
+    nothing, topped back up to that split every day."""
+    return daily * invested_share
+
+
 def monthly_returns(daily):
     return (1 + daily).resample("ME").prod() - 1
 

@@ -43,8 +43,10 @@ def build_html(d):
         f"<p class='sub'>{d['holdings']} holding{'' if d['holdings'] == 1 else 's'} · acting like {d['true_bets']:.1f} real bets · biggest: {escape(d['biggest'])} ({d['biggest_pct']:.0f}% of your money)</p></div></div>"
     )
 
-    parts.append("<h2>Four ways to be spread out</h2><table>")
-    parts.append(rows(d["dimensions"], lambda x: [td(x["name"]), tag(x["level"]), td(x["text"])]))
+    parts.append("<h2>What your grade is made of</h2><table>")
+    for group in dict.fromkeys(x["group"] for x in d["dimensions"]):
+        parts.append(f"<tr><th colspan='3'>{escape(group)}</th></tr>")
+        parts.append(rows([x for x in d["dimensions"] if x["group"] == group], lambda x: [td(x["name"]), tag(x["level"]), td(x["text"])]))
     parts.append("</table>")
 
     parts.append("<h2>What is holding the grade up or down</h2>")
@@ -70,7 +72,8 @@ def build_html(d):
 
     parts.append("<h2>How it has behaved</h2><table><tr><th></th><th class='num'>You</th><th class='num'>S&amp;P 500</th></tr>")
     parts.append(rows(d["performance"], lambda r: [td(r[0]), td(r[1], "num"), td(r[2], "num")]))
-    parts.append(f"</table><p class='small'>{escape(d['performance_range'])} · {escape(d['steady'])}</p>")
+    cash_note = f" · {escape(d['cash_note'])}" if d.get("cash_note") else ""
+    parts.append(f"</table><p class='small'>{escape(d['performance_range'])} · {escape(d['steady'])}{cash_note}</p>")
 
     parts.append("<h2>Past crashes</h2><table><tr><th>Crash</th><th>Dates</th><th class='num'>You</th><th class='num'>S&amp;P 500</th></tr>")
     parts.append(rows(d["crashes"], lambda c: [td(c["name"]), td(c["dates"]), td(c["you"], "num"), td(c["spy"], "num")]))
