@@ -12,7 +12,7 @@ else
 fi
 
 echo "Tests passed. Pushing to GitHub..."
-git add *.py requirements.txt requirements-dev.txt pytest.ini tests/
+git add *.py requirements.txt requirements-dev.txt pytest.ini tests/ .streamlit/config.toml
 git commit -m "${1:-Update app}"
 git push
 

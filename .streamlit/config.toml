@@ -1,0 +1,37 @@
+# Look and feel for the Check-Up. Colors follow Apple's system palette; the app follows the
+# viewer's light/dark setting. secrets.toml (gitignored) can sit next to this file.
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+font = "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif"
+headingFontWeights = [700, 650, 600, 600, 600, 600]
+baseRadius = "0.75rem"
+buttonRadius = "full"
+showWidgetBorder = false
+chartCategoricalColors = ["#2f7ae5", "#30a46c", "#f0a020", "#8e4ec6", "#e5484d", "#12a594", "#8e8e93"]
+
+[theme.light]
+primaryColor = "#0071e3"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f5f5f7"
+textColor = "#1d1d1f"
+borderColor = "#e3e3e8"
+dataframeHeaderBackgroundColor = "#f5f5f7"
+blueColor = "#0071e3"
+greenColor = "#248a3d"
+orangeColor = "#c26a00"
+redColor = "#d70015"
+
+[theme.dark]
+primaryColor = "#0a84ff"
+backgroundColor = "#111113"
+secondaryBackgroundColor = "#1c1c1e"
+textColor = "#f5f5f7"
+borderColor = "#2c2c2e"
+dataframeHeaderBackgroundColor = "#1c1c1e"
+blueColor = "#0a84ff"
+greenColor = "#30d158"
+orangeColor = "#ff9f0a"
+redColor = "#ff453a"

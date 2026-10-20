@@ -12,9 +12,10 @@ import llm_csv
 import optimizer
 import regions
 import report
+import style
 import tips
 
-st.set_page_config(page_title="Portfolio Check-Up", page_icon="🩺", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Portfolio Check-Up", page_icon=":material/monitor_heart:", layout="wide", initial_sidebar_state="collapsed")
 
 
 class IncompleteDownload(Exception):
@@ -45,26 +46,6 @@ def cached_download(tickers, period):
 
 
 LEVEL_MARK = {"high": ":red[Needs attention]", "medium": ":orange[Worth knowing]", "good": ":green[Working]"}
-LEVEL_LABEL = {"high": "Needs attention", "medium": "Worth knowing", "good": "Working"}
-LEVEL_COLOR = {"high": "#d64545", "medium": "#e08a00", "good": "#1f9d55"}
-COUNT_LABEL = {"high": "need attention", "medium": "worth knowing", "good": "working"}
-TIP_ICON = {"high": "!", "medium": "i", "good": "✓"}
-SCORE_LETTER = "FDCBA"
-RING_RADIUS = 30
-VISUAL_CSS = """<style>
-.rings{display:flex;flex-wrap:wrap;gap:12px;margin:4px 0 12px}
-.ring-card{flex:1 1 120px;border:1px solid rgba(128,128,128,.25);border-radius:12px;padding:14px 8px 12px;text-align:center}
-.ring-label{font-weight:600;margin-top:6px}
-.ring-short{font-size:.85rem;opacity:.7;line-height:1.3}
-.tip-counts{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
-.tip-count{border-radius:999px;padding:3px 12px;font-size:.85rem;font-weight:600;color:#fff}
-.tip{display:flex;gap:14px;border:1px solid rgba(128,128,128,.25);border-left:5px solid;border-radius:10px;padding:14px 16px;margin:0 0 10px}
-.tip-icon{flex:0 0 30px;height:30px;border-radius:50%;color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center}
-.tip-tag{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
-.tip-title{font-weight:600;font-size:1.05rem;margin:2px 0 6px}
-.tip-why{font-size:.9rem;opacity:.75;margin-bottom:8px}
-.tip-help{font-size:.95rem}
-</style>"""
 PERIOD = "max"
 GRADE_YEARS = 3
 GROWTH_WINDOWS = {"1 year": 1, "3 years": 3, "5 years": 5, "10 years": 10, "All history": None}
@@ -80,11 +61,11 @@ BENCHMARKS = {
 BENCHMARK_TICKERS = sorted({t for mix in BENCHMARKS.values() for t in mix})
 DEFAULT_BENCHMARK = next(iter(BENCHMARKS))
 CUSTOM_OPTION = "Another ticker…"
-YOU_COLOR = "#2a78d6"
-AFTER_COLOR = "#1baf7a"
-BENCH_COLOR = "#898781"
-SLICE_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7"]
-ASSET_COLORS = {"Stocks": "#2a78d6", "Bonds": "#1baf7a", "Gold": "#eda100", "Cash": "#008300"}
+YOU_COLOR = style.BLUE
+AFTER_COLOR = style.GREEN
+BENCH_COLOR = style.GRAY
+SLICE_COLORS = [style.BLUE, style.TEAL, style.AMBER, style.VIOLET, style.RED, style.GREEN, style.GRAY]
+ASSET_COLORS = {"Stocks": style.BLUE, "Bonds": style.GREEN, "Gold": style.AMBER, "Cash": style.GRAY}
 CASH_NOTE = "Cash is counted as earning nothing; the mix is kept at today's split."
 
 METHOD = [
@@ -323,16 +304,6 @@ SCENARIO_STATS = [
 ]
 
 
-def stat_chip(col, label, before, after, fmt, higher_is_better):
-    if fmt(after) == fmt(before):
-        verdict = "about the same"
-    elif (after > before) == higher_is_better:
-        verdict = ":green[better]"
-    else:
-        verdict = ":red[worse]"
-    col.markdown(f"**{label}**  \n{fmt(before)} → {fmt(after)}  \n{verdict}")
-
-
 def compare_chart(wide, kind, y_title, y_format, height, zero, colors=None):
     names = list(wide.columns)
     long = wide.rename_axis("Date").reset_index().melt("Date", var_name="Series", value_name="Value")
@@ -342,68 +313,15 @@ def compare_chart(wide, kind, y_title, y_format, height, zero, colors=None):
         y=alt.Y("Value:Q", title=y_title, axis=alt.Axis(format=y_format), scale=alt.Scale(zero=zero)),
         color=alt.Color("Series:N", scale=alt.Scale(domain=names, range=colors or [YOU_COLOR, BENCH_COLOR]), legend=alt.Legend(title=None, orient="top")),
     )
-    body = base.mark_area(fillOpacity=0.35, line=True) if kind == "area" else base.mark_line(strokeWidth=2)
-    dots = base.mark_point(size=50, filled=True).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)))
-    rule = alt.Chart(long).transform_pivot("Series", value="Value", groupby=["Date"]).mark_rule(color="#c3c2b7").encode(
+    body = base.mark_area(fillOpacity=0.35, line=True) if kind == "area" else base.mark_line(strokeWidth=1.75)
+    dots = base.mark_point(size=45, filled=True).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)))
+    rule = alt.Chart(long).transform_pivot("Series", value="Value", groupby=["Date"]).mark_rule(color="rgba(128,128,128,.45)").encode(
         x="Date:T",
         opacity=alt.condition(hover, alt.value(1), alt.value(0)),
         tooltip=[alt.Tooltip("Date:T", title="Date", format="%b %d, %Y")]
         + [alt.Tooltip(field=n.replace(".", "\\."), type="quantitative", title=n, format=y_format) for n in names],
     ).add_params(hover)
     return alt.layer(body, dots, rule).properties(height=height)
-
-
-def score_rings(dimensions):
-    circumference = 2 * 3.14159 * RING_RADIUS
-    cards = []
-    for d in dimensions:
-        color = LEVEL_COLOR[d["level"]]
-        filled = max(d["score"], 0.25) / 4 * circumference  # a sliver even at 0, so an empty ring doesn't look broken
-        cards.append(
-            f"<div class='ring-card' title='{escape(d['text'])}'>"
-            "<svg viewBox='0 0 72 72' width='76' height='76'>"
-            f"<circle cx='36' cy='36' r='{RING_RADIUS}' fill='none' stroke='rgba(128,128,128,.2)' stroke-width='7'/>"
-            f"<circle cx='36' cy='36' r='{RING_RADIUS}' fill='none' stroke='{color}' stroke-width='7' stroke-linecap='round' "
-            f"stroke-dasharray='{filled:.1f} {circumference:.1f}' transform='rotate(-90 36 36)'/>"
-            f"<text x='36' y='38' text-anchor='middle' dominant-baseline='middle' font-size='24' font-weight='700' fill='{color}'>{SCORE_LETTER[d['score']]}</text>"
-            "</svg>"
-            f"<div class='ring-label'>{escape(d['label'])}</div>"
-            f"<div class='ring-short'>{escape(d['short'])}</div>"
-            "</div>"
-        )
-    return "<div class='rings'>" + "".join(cards) + "</div>"
-
-
-def tip_cards(tips_list):
-    counts = [(lvl, sum(t["level"] == lvl for t in tips_list)) for lvl in ("high", "medium", "good")]
-    chips = "".join(
-        f"<span class='tip-count' style='background:{LEVEL_COLOR[lvl]}'>{n} {COUNT_LABEL[lvl]}</span>"
-        for lvl, n in counts if n
-    )
-    cards = "".join(
-        f"<div class='tip' style='border-left-color:{LEVEL_COLOR[t['level']]}'>"
-        f"<div class='tip-icon' style='background:{LEVEL_COLOR[t['level']]}'>{TIP_ICON[t['level']]}</div>"
-        "<div>"
-        f"<div class='tip-tag' style='color:{LEVEL_COLOR[t['level']]}'>{LEVEL_LABEL[t['level']]}</div>"
-        f"<div class='tip-title'>{escape(t['title'])}</div>"
-        f"<div class='tip-why'>{escape(t['why'])}</div>"
-        f"<div class='tip-help'><b>What usually changes this:</b> {escape(t['action'])}</div>"
-        "</div></div>"
-        for t in tips_list
-    )
-    return f"<div class='tip-counts'>{chips}</div>{cards}"
-
-
-def donut(rows, field, title, colors):
-    df = pd.DataFrame(rows)
-    df["share"] = df["pct"] / 100
-    names = df[field].tolist()
-    return alt.Chart(df).mark_arc(innerRadius=60).encode(
-        theta=alt.Theta("pct:Q"),
-        order=alt.Order("pct:Q", sort="descending"),
-        color=alt.Color(f"{field}:N", scale=alt.Scale(domain=names, range=colors), legend=alt.Legend(title=None, orient="bottom", columns=3)),
-        tooltip=[alt.Tooltip(f"{field}:N", title=title), alt.Tooltip("share:Q", title="Share", format=".0%")],
-    ).properties(height=260)
 
 
 if "holdings_df" not in st.session_state:
@@ -416,13 +334,14 @@ if "weights" not in st.session_state:
 if "cash" not in st.session_state:
     st.session_state.cash = 0.0
 
+st.markdown(style.CSS, unsafe_allow_html=True)
 st.title("Portfolio Check-Up")
-st.caption("A plain-English look at whether your investments are really spread out — and what is behind the result.")
+st.markdown("<div class='lead'>A plain-English look at whether your investments are really spread out — and what is behind the result.</div>", unsafe_allow_html=True)
 analyzed = st.session_state.weights is not None
 
 if not analyzed:
-    st.info(
-        "**What this does:** type what you own below and tap **Analyze** for a grade, what's holding it back, "
+    st.write(
+        "Type what you own below and tap **Analyze** for a grade, what's holding it back, "
         "and what-if scenarios showing how a different mix would have behaved. The list below is just an example — change it to what you own."
     )
 
@@ -578,13 +497,16 @@ def growth_section(weights, returns, prices, tickers, holdings, invested_share, 
     else:
         st.altair_chart(compare_chart(both.apply(history.growth_of), "line", "Value of $10,000", "$,.0f", 300, zero=False), width="stretch")
         yours, bench = history.summary(both["You"]), history.summary(both[bench_name])
-        st.markdown(f"Total return since {both.index[0]:%b %Y}: you **{signed_pct(yours['total_return'])}** · {bench_name} **{signed_pct(bench['total_return'])}**")
-        st.markdown(f"Worst drop along the way: you **{pct(yours['max_drawdown'])}** · {bench_name} **{pct(bench['max_drawdown'])}**")
-        st.markdown(f"Typical yearly swing: you **{pct(yours['volatility'])}** · {bench_name} **{pct(bench['volatility'])}**")
+        st.markdown(style.compare_table([("You", YOU_COLOR), (bench_name, BENCH_COLOR)], [
+            (f"Total return since {both.index[0]:%b %Y}", [signed_pct(yours["total_return"]), signed_pct(bench["total_return"])]),
+            ("Worst drop along the way", [pct(yours["max_drawdown"]), pct(bench["max_drawdown"])]),
+            ("Typical yearly swing", [pct(yours["volatility"]), pct(bench["volatility"])]),
+        ]), unsafe_allow_html=True)
         st.caption(f"Showing {history.date_range_text(both)}{window_note(returns_growth, tickers, both, history.window_start(returns, growth_years), bench=(bench_name, bench_daily.index[0]))}.")
 
         if swaps:
-            st.markdown("**See a scenario play out**")
+            st.space("medium")
+            st.markdown("##### See a scenario play out")
             move = st.selectbox("Scenario to replay", [s["text"] for s in swaps], label_visibility="collapsed", key="whatif_move")
             swap = next(s for s in swaps if s["text"] == move)
             after_holdings = dict(holdings)
@@ -597,9 +519,11 @@ def growth_section(weights, returns, prices, tickers, holdings, invested_share, 
             trio = pd.concat([your_daily.rename("You now"), after_daily.rename("In the scenario"), bench_daily.rename(bench_name)], axis=1, join="inner")
             st.altair_chart(compare_chart(trio.apply(history.growth_of), "line", "Value of $10,000", "$,.0f", 300, zero=False, colors=[YOU_COLOR, AFTER_COLOR, BENCH_COLOR]), width="stretch")
             now, after = history.summary(trio["You now"]), history.summary(trio["In the scenario"])
-            st.markdown(f"Total return since {trio.index[0]:%b %Y}: now **{signed_pct(now['total_return'])}** · in the scenario **{signed_pct(after['total_return'])}**")
-            st.markdown(f"Worst drop along the way: now **{pct(now['max_drawdown'])}** · in the scenario **{pct(after['max_drawdown'])}**")
-            st.markdown(f"Typical yearly swing: now **{pct(now['volatility'])}** · in the scenario **{pct(after['volatility'])}**")
+            st.markdown(style.compare_table([("You now", YOU_COLOR), ("In the scenario", AFTER_COLOR)], [
+                (f"Total return since {trio.index[0]:%b %Y}", [signed_pct(now["total_return"]), signed_pct(after["total_return"])]),
+                ("Worst drop along the way", [pct(now["max_drawdown"]), pct(after["max_drawdown"])]),
+                ("Typical yearly swing", [pct(now["volatility"]), pct(after["volatility"])]),
+            ]), unsafe_allow_html=True)
             st.caption("Past prices, not a prediction — this is how the scenario's mix would have behaved over the same stretch.")
 
 
@@ -627,16 +551,13 @@ else:
         weights_with_cash["CASH"] = facts["cash_share"]
     grade_daily = history.portfolio_daily(weights, returns_3y[tickers])
 
-    with st.container(border=True):
-        g, v = st.columns([1, 5])
-        g.markdown(f"# {advice['grade']}")
-        g.caption("Grade")
-        v.markdown(f"#### {advice['verdict']}")
-        m1, m2, m3 = v.columns(3)
-        m1.metric("Holdings", facts["holdings"])
-        m2.metric("Real bets", f"{facts['true_bets']:.1f}")
-        m3.metric("Biggest holding", f"{facts['biggest']} · {facts['biggest_pct']:.0f}%")
-        v.caption("Grades run A to F. They average the six rings below: spread across companies, industries and countries, plus how steady, how consistent and how free of near-duplicates the mix has been.")
+    st.space("medium")
+    st.markdown(style.hero(advice["grade"], advice["verdict"], [
+        ("Holdings", str(facts["holdings"])),
+        ("Real bets", f"{facts['true_bets']:.1f}"),
+        ("Biggest holding", f"{facts['biggest']} · {facts['biggest_pct']:.0f}%"),
+    ]), unsafe_allow_html=True)
+    st.caption("Grades run A to F. They average the six rings below: spread across companies, industries and countries, plus how steady, how consistent and how free of near-duplicates the mix has been.")
     grade_note = late_start_note(returns_3y, tickers, grade_daily, history.window_start(returns, GRADE_YEARS), "so the grade only covers that stretch")
     if grade_note:
         st.caption(f"Based on prices from {history.date_range_text(grade_daily)}{grade_note}.")
@@ -649,12 +570,11 @@ else:
 
     report_slot = st.empty()
 
-    st.markdown(VISUAL_CSS, unsafe_allow_html=True)
-    st.markdown("**What your grade is made of**")
+    st.markdown("#### What your grade is made of")
     st.caption("Your letter grade is the average of these rings (lowered when much of your money sits in cash). A fuller ring scores higher.")
     for group in dict.fromkeys(dim["group"] for dim in advice["dimensions"]):
         st.caption(f"**{group}**")
-        st.markdown(score_rings([dim for dim in advice["dimensions"] if dim["group"] == group]), unsafe_allow_html=True)
+        st.markdown(style.score_rings([dim for dim in advice["dimensions"] if dim["group"] == group]), unsafe_allow_html=True)
     with st.expander("What each ring means"):
         for dim in advice["dimensions"]:
             st.markdown(f"**{dim['name']}** — {LEVEL_MARK[dim['level']]}  \n{dim['text']}")
@@ -672,41 +592,33 @@ else:
             "across types of investment are two different things; the **By type of investment** chart further down shows the second."
         )
 
-    st.divider()
+    st.space("medium")
     st.subheader("What stands out")
     st.caption("Most important first.")
-    st.markdown(tip_cards(advice["tips"]), unsafe_allow_html=True)
+    st.markdown(style.tip_cards(advice["tips"]), unsafe_allow_html=True)
 
-    st.divider()
+    st.space("medium")
     st.subheader("What-if scenarios")
     st.info("These are hypothetical educational scenarios, not recommendations to buy or sell. They show how historical risk and diversification would have changed under a different mix. Only a short fixed list of broad funds is tried; other investments not considered may have similar or better characteristics.")
     swaps = cached_swaps(tuple(sorted(holdings.items())), cash, GRADE_YEARS)
     if any(s.get("tweak") for s in swaps):
         st.caption("Smaller tweaks keep your grade where it is but make at least one number below better — useful when a mix already grades well.")
     for i, swap in enumerate(swaps, 1):
-        with st.container(border=True):
-            head, grade_col = st.columns([4, 1])
-            head.caption(f"SCENARIO {i} · SMALLER TWEAK" if swap.get("tweak") else f"SCENARIO {i}")
-            head.markdown(f"### {swap['text']}")
-            head.write(swap["why"])
-            grade_col.caption("Grade")
-            grade_col.markdown(f"## {swap['before']['grade']} → {swap['after']['grade']}")
-            for col, (label, key, fmt, higher_is_better) in zip(st.columns(4), SCENARIO_STATS):
-                stat_chip(col, label, swap["before"][key], swap["after"][key], fmt, higher_is_better)
+        st.markdown(style.scenario_card(i, swap, SCENARIO_STATS), unsafe_allow_html=True)
     if not swaps and advice["grade"] in ("A", "B"):
         st.write("None of the tested swaps would have clearly raised the grade or real bets for this mix — that's a good sign.")
     elif not swaps:
         st.write("None of the tested swaps would have clearly raised the grade or real bets for this mix. The notes above explain what is holding the grade down.")
     st.caption(f"Each scenario swaps part or all of one large holding for one of ten common diversifying funds, then re-grades the mix over the last {GRADE_YEARS} years; the ones that change the most are shown, topped up with smaller tweaks when fewer than three clearly raise the grade or real bets. Typical yearly swing = how much a normal year moves this mix up or down. Worst drop = the biggest fall from a high point before it recovered. A steadier mix usually earns a bit less per year — that trade-off is the point. Share counts use today's prices and are rounded.")
 
-    st.divider()
+    st.space("medium")
     st.subheader("How it has grown")
     st.caption(f"What $10,000 in {mix_words} would be worth today, next to whatever you pick to compare it with.")
     if cash > 0:
         st.caption(CASH_NOTE)
     growth_section(weights, returns, prices, tickers, holdings, invested_share, swaps)
 
-    st.divider()
+    st.space("medium")
     st.subheader("How it would have held up in past crashes")
     st.caption(f"What {mix_words} would have done, compared with the S&P 500.")
     crashes = [
@@ -717,9 +629,9 @@ else:
     worse_count = 0
     compared = 0
     crash_rows = []
+    crash_cards = []
     all_daily = history.with_cash(history.filled_daily(weights, returns), invested_share)
-    cols = st.columns(3, gap="medium")
-    for col, (name, start, end) in zip(cols, crashes):
+    for name, start, end in crashes:
         window = all_daily.loc[start:end]
         yours = {"total_return": history.total_return(window)} if len(window) and all_daily.index[0] <= pd.Timestamp(start) else None
         absent = [t for t in tickers if returns[t].first_valid_index() is None or returns[t].first_valid_index() > pd.Timestamp(start)]
@@ -729,24 +641,23 @@ else:
             "you": pct(yours["total_return"]) if yours else "not enough history",
             "spy": pct(spy["total_return"]) if spy else "n/a",
         })
-        with col:
-            with st.container(border=True):
-                st.markdown(f"**{name}**")
-                st.caption(history.short_range_text(start, end))
-                if yours is None:
-                    st.caption("Not enough history — most of your money is in holdings that didn't exist yet.")
+        card = {"name": name, "dates": history.short_range_text(start, end), "rows": []}
+        if yours is None:
+            card["note"] = "Not enough history — most of your money is in holdings that didn't exist yet."
+        else:
+            card["rows"].append(("You", pct(yours["total_return"])))
+            if spy is not None:
+                card["rows"].append(("S&P 500", pct(spy["total_return"])))
+                compared += 1
+                if yours["total_return"] < spy["total_return"]:
+                    worse_count += 1
+                    card["note"], card["note_color"] = "Fell harder than the market", style.RED
                 else:
-                    st.markdown(f"You: **{pct(yours['total_return'])}**")
-                    if spy is not None:
-                        st.markdown(f"S&P 500: **{pct(spy['total_return'])}**")
-                        compared += 1
-                        if yours["total_return"] < spy["total_return"]:
-                            worse_count += 1
-                            st.caption("Fell harder than the market")
-                        else:
-                            st.caption("Held up better than the market")
-                    if absent:
-                        st.caption(f"Without {', '.join(absent)}, which didn't exist yet.")
+                    card["note"], card["note_color"] = "Held up better than the market", style.GREEN
+            if absent:
+                card["rows"].append(("Without", ", ".join(absent)))
+        crash_cards.append(card)
+    st.markdown(style.crash_cards(crash_cards), unsafe_allow_html=True)
     if compared:
         if worse_count == 0:
             st.success(f"This mix would have dropped **less** than the market in every crash we could check ({compared} of {compared}).")
@@ -755,7 +666,7 @@ else:
         else:
             st.info(f"This mix would have dropped more than the market in {worse_count} of the {compared} crashes we could check.")
 
-    st.divider()
+    st.space("medium")
     st.subheader("How steady it has been")
     steady_choice = st.radio("Time window", list(STEADY_WINDOWS), horizontal=True, label_visibility="collapsed", key="steady_years")
     steady_years = STEADY_WINDOWS[steady_choice]
@@ -769,50 +680,40 @@ else:
     monthly_df = monthly.reset_index()
     monthly_df.columns = ["Month", "Return"]
     monthly_df["Direction"] = monthly_df["Return"].apply(lambda r: "Up" if r >= 0 else "Down")
-    chart = alt.Chart(monthly_df).mark_bar().encode(
+    chart = alt.Chart(monthly_df).mark_bar(cornerRadiusEnd=2).encode(
         x=alt.X("Month:T", title=None),
         y=alt.Y("Return:Q", title="Monthly change", axis=alt.Axis(format="%")),
-        color=alt.Color("Direction:N", scale=alt.Scale(domain=["Up", "Down"], range=["#2ecc71", "#e74c3c"]), legend=None),
+        color=alt.Color("Direction:N", scale=alt.Scale(domain=["Up", "Down"], range=[style.GREEN, style.RED]), legend=None),
         tooltip=[alt.Tooltip("Month:T", title="Month", format="%b %Y"), alt.Tooltip("Return:Q", title="Change", format=".1%")]
     ).properties(height=240)
     st.altair_chart(chart, width="stretch")
     st.caption(f"Showing {history.date_range_text(steady_daily)}{window_note(returns_steady, tickers, steady_daily, history.window_start(returns, steady_years))}.")
 
-    st.divider()
+    st.space("medium")
     st.subheader("Where your money really is")
     st.caption("As of today's prices.")
-    left, right = st.columns(2)
-    with left:
-        st.write("**By type of investment**")
-        rows = regions.asset_mix(weights_with_cash)
-        st.altair_chart(donut(rows, "asset", "Type", [ASSET_COLORS.get(r["asset"], SLICE_COLORS[-1]) for r in rows]), width="stretch")
-        st.caption(" · ".join(f"{r['asset']} {r['pct']:.0f}%" for r in rows))
+    left, right = st.columns(2, gap="large")
+    rows = regions.asset_mix(weights_with_cash)
+    left.markdown(style.split_bar("By type of investment", [(r["asset"], r["pct"]) for r in rows],
+                                  [ASSET_COLORS.get(r["asset"], SLICE_COLORS[-1]) for r in rows]), unsafe_allow_html=True)
+    rows = regions.country_mix(weights_with_cash)
+    right.markdown(style.split_bar("By country", [(r["country"], r["pct"]) for r in rows], SLICE_COLORS), unsafe_allow_html=True)
+    st.space("medium")
+    left, right = st.columns(2, gap="large")
+    by_holding = [(t, w * 100, None) for t, w in sorted(facts["total_weights"].items(), key=lambda kv: -kv[1])]
+    if facts["cash_share"] > 0:
+        by_holding.append(("Cash", facts["cash_share"] * 100, None))
+    left.markdown(style.bar_list("By holding", "Share of everything you own, including cash.", by_holding), unsafe_allow_html=True)
     with right:
-        st.write("**By country**")
-        rows = regions.country_mix(weights_with_cash)
-        st.altair_chart(donut(rows, "country", "Country", SLICE_COLORS[:len(rows)]), width="stretch")
-        st.caption(" · ".join(f"{r['country']} {r['pct']:.0f}%" for r in rows))
-    left, right = st.columns(2)
-    with left:
-        st.write("**By holding** — share of everything you own, including cash")
-        for t, w in sorted(facts["total_weights"].items(), key=lambda kv: -kv[1]):
-            st.write(f"{t} — {pct(w)}")
-            st.progress(min(1.0, max(0.0, w)))
-        if facts["cash_share"] > 0:
-            st.write(f"Cash — {pct(facts['cash_share'])}")
-            st.progress(min(1.0, max(0.0, facts["cash_share"])))
-    with right:
-        st.write("**By industry** — share of your invested money, with the S&P 500 for comparison")
         if facts["sectors"]:
-            for row in facts["sectors"]:
-                st.write(f"{row['sector']} — {row['pct']:.0f}% (S&P 500: {row['sp']:.0f}%)")
-                st.progress(min(1.0, max(0.0, row["pct"] / 100)))
+            st.markdown(style.bar_list("By industry", "Share of your invested money. The tick marks the S&P 500.",
+                                       [(r["sector"], r["pct"], r["sp"]) for r in facts["sectors"]]), unsafe_allow_html=True)
         else:
-            st.info("None of your holdings are individual stocks or stock funds, so there's no industry split to show.")
+            st.markdown(style.bar_list("By industry", "None of your holdings are individual stocks or stock funds, so there's no industry split to show.", []), unsafe_allow_html=True)
         if facts["non_eq"] > 0.005:
             st.caption(f"Bonds, gold, or other non-stock funds: {pct(facts['non_eq'])} of your invested money.")
 
-    st.divider()
+    st.space("medium")
     with st.expander("Learn the ideas — a 5-minute read"):
         st.write("#### Owning more stocks isn't the same as being spread out")
         st.write("Owning 20 different tickers *feels* diversified because it's a big number. But if all 20 are large tech companies, they'll rise and fall together in a downturn — you're really making one big bet (\"tech will do well\") spread across 20 names. That's what **real bets** measures: how many genuinely separate bets you're making, not how many tickers are on the list.")
@@ -874,7 +775,7 @@ else:
             "steady": f"{int((steady_3y > 0).sum())} of {len(steady_3y)} months ended positive",
             "crashes": crash_rows, "scenarios": swaps, "method": METHOD,
         }),
-        file_name="portfolio-check-up.html", mime="text/html",
+        file_name="portfolio-check-up.html", mime="text/html", icon=":material/download:",
         help="Opens in any browser. Use the browser's Print to save it as a PDF.",
     )
 
